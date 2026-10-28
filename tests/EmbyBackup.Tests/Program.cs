@@ -159,6 +159,96 @@ namespace EmbyBackup.Tests
                     Check(BackupCatalog.IsManagedFileName("emby-backup-20260101-000000Z.zip"),
                         "normal managed file names are accepted");
 
+                    DateTime stamp;
+                    Check(BackupFormat.TryParseArchiveStamp("emby-backup-20260101-010203Z.zip", out stamp)
+                        && stamp == new DateTime(2026, 1, 1, 1, 2, 3, DateTimeKind.Utc),
+                        "archive timestamps are parsed from the file name");
+                    Check(!BackupFormat.TryParseArchiveStamp("notes.zip", out stamp),
+                        "foreign file names have no archive timestamp");
+
+                    const string hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+                    const string archiveName = "emby-backup-20260101-010203Z.zip";
+                    string parsedHash;
+                    Check(BackupFormat.IsValidSidecar(
+                            BackupFormat.SidecarText(hash, archiveName), archiveName, out parsedHash)
+                        && parsedHash == hash,
+                        "the .sha256 sidecar is recognized as an ownership marker");
+                    Check(!BackupFormat.IsValidSidecar(
+                            BackupFormat.SidecarText(hash, "other.zip"), archiveName, out parsedHash),
+                        "a sidecar for another file is rejected");
+
+                    var unixListing = FtpBackupDestination.ParseListing(
+                        "-rw-r--r--    1 emby     emby        23815 Oct 28 13:52 emby-backup-20260101-010203Z.zip");
+                    Check(unixListing != null && unixListing.Name == "emby-backup-20260101-010203Z.zip"
+                        && unixListing.Size == 23815,
+                        "Unix FTP listings are parsed with their size");
+                    Check(FtpBackupDestination.ParseListing(
+                            "drwxr-xr-x    2 emby     emby         4096 Oct 28 13:52 emby") == null,
+                        "FTP directories are ignored");
+                    var iisListing = FtpBackupDestination.ParseListing(
+                        "10-28-26  01:52PM               23815 emby-backup-20260101-010203Z.zip");
+                    Check(iisListing != null && iisListing.Name == "emby-backup-20260101-010203Z.zip"
+                        && iisListing.Size == 23815,
+                        "IIS FTP listings are parsed with their size");
+                    Check(FtpBackupDestination.ParseListing(
+                            "10-28-26  01:52PM       <DIR>          emby") == null,
+                        "IIS FTP directories are ignored");
+
+                    var remote = new MemoryDestination();
+                    remote.Add("emby-backup-20260101-000000Z.zip", true);                    remote.Add("emby-backup-20260102-000000Z.zip", true);
+                    remote.Add("emby-backup-20260103-000000Z.zip", true);
+                    remote.Add("emby-backup-20260104-000000Z.zip", false);
+                    remote.Add("notes.zip", false);
+                    var remoteRetention = new RetentionService().Apply(remote, 2, _ => { });
+                    Check(remoteRetention.Kept == 2, "remote retention keeps the requested number of backups");
+                    Check(remoteRetention.Deleted.Count == 1
+                        && remoteRetention.Deleted[0] == "emby-backup-20260101-000000Z.zip",
+                        "remote retention deletes the oldest owned archive");
+                    Check(remote.Has("emby-backup-20260104-000000Z.zip"),
+                        "remote retention keeps archives it cannot prove are its own");
+                    Check(remote.Has("notes.zip"), "remote retention never deletes foreign files");
+
+                    CheckThrows(() => BackupDestinations.Create(null, source, null),
+                        "a missing destination is refused");
+                    CheckThrows(() => BackupDestinations.Create(
+                            new BackupDestinationSettings { Type = BackupDestinationKinds.Local, Path = "" }, source, null),
+                        "an empty local destination is refused");
+                    CheckThrows(() =>
+                        {
+                            using (var ftp = BackupDestinations.Create(
+                                new BackupDestinationSettings { Type = BackupDestinationKinds.Ftp, FtpHost = "" },
+                                source,
+                                null))
+                            {
+                                ftp.Prepare();
+                            }
+                        },
+                        "FTP without a server address is refused");
+
+                    var mountedPath = Path.Combine(root, "mounted-share");
+                    Directory.CreateDirectory(mountedPath);
+                    var networkLogs = new List<string>();
+                    using (var mounted = BackupDestinations.Create(
+                        new BackupDestinationSettings
+                        {
+                            Type = BackupDestinationKinds.Network,
+                            Path = mountedPath,
+                            NetworkUsername = "user",
+                            NetworkPassword = "secret",
+                        },
+                        source,
+                        networkLogs.Add))
+                    {
+                        mounted.Prepare();
+                        Check(mounted.Kind == BackupDestinationKinds.Network,
+                            "a network destination uses the mounted folder");
+                        if (!OperatingSystem.IsWindows())
+                        {
+                            Check(networkLogs.Any(l => l.IndexOf("ignored", StringComparison.OrdinalIgnoreCase) >= 0),
+                                "network credentials are ignored on Unix instead of failing");
+                        }
+                    }
+
                     var corrupt = Path.Combine(root, "corrupt.zip");
                     File.Copy(RealArchives(destination)[0], corrupt);
                     using (var stream = new FileStream(corrupt, FileMode.Open, FileAccess.ReadWrite))
@@ -209,7 +299,11 @@ namespace EmbyBackup.Tests
             {
                 ProgramDataPath = source,
                 PluginDataPath = pluginData,
-                DestinationPath = destination,
+                Destination = new BackupDestinationSettings
+                {
+                    Type = BackupDestinationKinds.Local,
+                    Path = destination,
+                },
                 EmbyVersion = "4.9.1.90",
                 PluginVersion = "1.0.0",
                 Compression = "Optimal",
@@ -313,6 +407,111 @@ namespace EmbyBackup.Tests
             {
                 Check(true, description);
             }
+        }
+    }
+
+    /// <summary>Small in-memory destination used to exercise retention on FTP-like listings.</summary>
+    internal sealed class MemoryDestination : IBackupDestination
+    {
+        private readonly Dictionary<string, bool> _files = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
+        public void Add(string name, bool owned)
+        {
+            _files[name] = owned;
+        }
+
+        public bool Has(string name)
+        {
+            return _files.ContainsKey(name);
+        }
+
+        public string Kind
+        {
+            get { return BackupDestinationKinds.Ftp; }
+        }
+
+        public string Location
+        {
+            get { return "memory://backups"; }
+        }
+
+        public string LocalRootPath
+        {
+            get { return null; }
+        }
+
+        public bool CanCheckFreeSpace
+        {
+            get { return false; }
+        }
+
+        public void Prepare()
+        {
+        }
+
+        public string CreateStagingPath(string fileName)
+        {
+            return Path.Combine(Path.GetTempPath(), fileName);
+        }
+
+        public BackupCommitResult Commit(string stagingPath, string fileName, string sha256, Action<string> log)
+        {
+            _files[fileName] = true;
+            return new BackupCommitResult { Location = Location + "/" + fileName };
+        }
+
+        public IReadOnlyList<BackupDestinationFile> ListArchives()
+        {
+            return _files.Keys
+                .Where(name => name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                .Select(name =>
+                {
+                    DateTime stamp;
+                    BackupFormat.TryParseArchiveStamp(name, out stamp);
+                    return new BackupDestinationFile
+                    {
+                        Name = name,
+                        Bytes = 1024,
+                        ModifiedUtc = stamp,
+                        HasSidecar = _files.ContainsKey(name + BackupConstants.SidecarSuffix),
+                    };
+                })
+                .ToList();
+        }
+
+        public IReadOnlyList<BackupDestinationFile> ListAll()
+        {
+            return _files.Keys
+                .Select(name => new BackupDestinationFile { Name = name, ModifiedUtc = DateTime.UtcNow })
+                .ToList();
+        }
+
+        public bool IsOwned(BackupDestinationFile file)
+        {
+            return _files.TryGetValue(file.Name, out var owned) && owned;
+        }
+
+        public void Delete(string fileName, Action<string> log)
+        {
+            _files.Remove(fileName);
+            _files.Remove(fileName + BackupConstants.SidecarSuffix);
+        }
+
+        public string Fetch(string fileName, string purpose)
+        {
+            throw new NotSupportedException();
+        }
+
+        public void Release(string localPath)
+        {
+        }
+
+        public void Discard(string stagingPath)
+        {
+        }
+
+        public void Dispose()
+        {
         }
     }
 

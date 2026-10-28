@@ -47,6 +47,19 @@ namespace EmbyBackup
         public string FileName { get; set; }
     }
 
+    [Route("/EmbyBackup/TestDestination", "POST", Summary = "Check that the configured destination is reachable and writable")]
+    [Authenticated(Roles = "Admin")]
+    public class BackupTestRequest : IReturn<BackupTestView>
+    {
+    }
+
+    public class BackupTestView
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; }
+        public string Location { get; set; }
+    }
+
     public class BackupStatusView
     {
         public bool Running { get; set; }
@@ -58,6 +71,7 @@ namespace EmbyBackup
         public List<string> Warnings { get; set; } = new List<string>();
         public BackupRecordView Last { get; set; }
         public string DestinationPath { get; set; }
+        public string DestinationType { get; set; }
         public bool ScheduledBackupsEnabled { get; set; }
         public string PluginVersion { get; set; }
     }
@@ -88,6 +102,7 @@ namespace EmbyBackup
     public class BackupFilesView
     {
         public string DestinationPath { get; set; }
+        public string DestinationType { get; set; }
         public string Error { get; set; }
         public List<BackupFileView> Files { get; set; } = new List<BackupFileView>();
     }
@@ -101,6 +116,7 @@ namespace EmbyBackup
         public bool HasManifest { get; set; }
         public bool IsEmbyBackup { get; set; }
         public bool HasChecksumFile { get; set; }
+        public bool MetadataKnown { get; set; }
         public int FileCount { get; set; }
         public int DatabaseCount { get; set; }
         public long TotalBytes { get; set; }
@@ -163,7 +179,7 @@ namespace EmbyBackup
 
             var configuration = plugin.Configuration;
             configuration.Normalize();
-            if (string.IsNullOrWhiteSpace(configuration.DestinationPath))
+            if (!BackupRuntime.GetDestinationSettings().IsConfigured)
             {
                 return new BackupRunView
                 {
@@ -200,8 +216,8 @@ namespace EmbyBackup
         public object Post(BackupVerifyRequest request)
         {
             var view = new BackupVerifyView();
-            var destination = BackupRuntime.DestinationPath;
-            if (string.IsNullOrWhiteSpace(destination))
+            var settings = BackupRuntime.GetDestinationSettings();
+            if (!settings.IsConfigured)
             {
                 view.Error = "No backup destination is configured.";
                 return view;
@@ -214,20 +230,71 @@ namespace EmbyBackup
                 return view;
             }
 
-            var path = Path.Combine(destination, request.FileName);
-            var verification = new BackupVerifier().Verify(path, true);
-            view.Valid = verification.Valid;
-            view.Error = verification.Error;
-            view.CheckedFiles = verification.CheckedFiles;
-            view.CheckedDatabases = verification.CheckedDatabases;
-
-            if (verification.Manifest != null)
+            string localPath = null;
+            IBackupDestination destination = null;
+            try
             {
-                view.CreatedUtc = verification.Manifest.CreatedUtc;
-                view.EmbyVersion = verification.Manifest.EmbyVersion;
-                view.PluginVersion = verification.Manifest.PluginVersion;
-                view.SourceProgramDataPath = verification.Manifest.SourceProgramDataPath;
-                view.TotalBytes = verification.Manifest.TotalBytes;
+                destination = BackupRuntime.CreateDestination(message => _logger.Info(message));
+                localPath = destination.Fetch(request.FileName, "verify");
+                var verification = new BackupVerifier().Verify(localPath, true);
+                view.Valid = verification.Valid;
+                view.Error = verification.Error;
+                view.CheckedFiles = verification.CheckedFiles;
+                view.CheckedDatabases = verification.CheckedDatabases;
+
+                if (verification.Manifest != null)
+                {
+                    view.CreatedUtc = verification.Manifest.CreatedUtc;
+                    view.EmbyVersion = verification.Manifest.EmbyVersion;
+                    view.PluginVersion = verification.Manifest.PluginVersion;
+                    view.SourceProgramDataPath = verification.Manifest.SourceProgramDataPath;
+                    view.TotalBytes = verification.Manifest.TotalBytes;
+                }
+            }
+            catch (Exception ex)
+            {
+                view.Valid = false;
+                view.Error = ex.Message;
+            }
+            finally
+            {
+                if (destination != null)
+                {
+                    destination.Release(localPath);
+                    destination.Dispose();
+                }
+            }
+
+            return view;
+        }
+
+        public object Post(BackupTestRequest request)
+        {
+            var view = new BackupTestView();
+            var settings = BackupRuntime.GetDestinationSettings();
+            view.Location = settings.Location;
+
+            if (!settings.IsConfigured)
+            {
+                view.Message = settings.IsFtp
+                    ? "Enter the FTP server address first."
+                    : "Choose a backup folder first.";
+                return view;
+            }
+
+            try
+            {
+                using (var destination = BackupRuntime.CreateDestination(message => _logger.Info(message)))
+                {
+                    destination.Prepare();
+                    view.Success = true;
+                    view.Message = "The destination is reachable and writable: " + destination.Location;
+                }
+            }
+            catch (Exception ex)
+            {
+                view.Success = false;
+                view.Message = ex.Message;
             }
 
             return view;
@@ -238,6 +305,7 @@ namespace EmbyBackup
             var status = BackupRuntime.GetStatus();
             var plugin = Plugin.Instance;
             var last = BackupHistoryStore.MostRecent(BackupRuntime.PluginDataPath);
+            var destination = BackupRuntime.GetDestinationSettings();
 
             return new BackupStatusView
             {
@@ -249,48 +317,91 @@ namespace EmbyBackup
                 FinishedUtc = status.FinishedUtc,
                 Warnings = status.Warnings,
                 Last = last == null ? null : Map(last),
-                DestinationPath = plugin == null ? string.Empty : plugin.Configuration.DestinationPath,
+                DestinationPath = destination.Location,
+                DestinationType = destination.NormalizedType,
                 ScheduledBackupsEnabled = plugin != null && plugin.Configuration.ScheduledBackupsEnabled,
                 PluginVersion = typeof(Plugin).Assembly.GetName().Version == null
-                    ? "1.1.1"
+                    ? "1.2.0"
                     : typeof(Plugin).Assembly.GetName().Version.ToString(),
             };
         }
 
         private static BackupFilesView BuildFiles()
         {
-            var destination = BackupRuntime.DestinationPath;
-            var view = new BackupFilesView { DestinationPath = destination };
-            if (string.IsNullOrWhiteSpace(destination))
+            var settings = BackupRuntime.GetDestinationSettings();
+            var view = new BackupFilesView
+            {
+                DestinationPath = settings.Location,
+                DestinationType = settings.NormalizedType,
+            };
+
+            if (!settings.IsConfigured)
             {
                 view.Error = "No backup destination is configured.";
                 return view;
             }
 
-            if (!Directory.Exists(destination))
+            try
             {
-                view.Error = "The backup destination does not exist or is not reachable.";
-                return view;
-            }
-
-            view.Files = BackupCatalog.List(destination)
-                .Select(info => new BackupFileView
+                using (var destination = BackupRuntime.CreateDestination(message => { }))
                 {
-                    FileName = info.FileName,
-                    Bytes = info.Bytes,
-                    CreatedUtc = info.CreatedUtcValue == DateTime.MinValue
-                        ? null
-                        : BackupFormat.Utc(info.CreatedUtcValue),
-                    LastWriteUtc = BackupFormat.Utc(info.LastWriteUtc),
-                    HasManifest = info.HasManifest,
-                    IsEmbyBackup = info.IsEmbyBackup,
-                    HasChecksumFile = info.HasChecksumFile,
-                    FileCount = info.FileCount,
-                    DatabaseCount = info.DatabaseCount,
-                    TotalBytes = info.TotalBytes,
-                    Error = info.Error,
-                })
-                .ToList();
+                    var root = destination.LocalRootPath;
+                    if (root != null)
+                    {
+                        if (!Directory.Exists(root))
+                        {
+                            view.Error = "The backup destination does not exist or is not reachable.";
+                            return view;
+                        }
+
+                        view.Files = BackupCatalog.List(root)
+                            .Select(info => new BackupFileView
+                            {
+                                FileName = info.FileName,
+                                Bytes = info.Bytes,
+                                CreatedUtc = info.CreatedUtcValue == DateTime.MinValue
+                                    ? null
+                                    : BackupFormat.Utc(info.CreatedUtcValue),
+                                LastWriteUtc = BackupFormat.Utc(info.LastWriteUtc),
+                                HasManifest = info.HasManifest,
+                                IsEmbyBackup = info.IsEmbyBackup,
+                                HasChecksumFile = info.HasChecksumFile,
+                                MetadataKnown = true,
+                                FileCount = info.FileCount,
+                                DatabaseCount = info.DatabaseCount,
+                                TotalBytes = info.TotalBytes,
+                                Error = info.Error,
+                            })
+                            .ToList();
+                    }
+                    else
+                    {
+                        view.Files = destination.ListArchives()
+                            .OrderByDescending(file => file.ModifiedUtc)
+                            .ThenByDescending(file => file.Name, StringComparer.OrdinalIgnoreCase)
+                            .Select(file => new BackupFileView
+                            {
+                                FileName = file.Name,
+                                Bytes = file.Bytes < 0 ? 0 : file.Bytes,
+                                CreatedUtc = file.ModifiedUtc == DateTime.MinValue
+                                    ? null
+                                    : BackupFormat.Utc(file.ModifiedUtc),
+                                LastWriteUtc = file.ModifiedUtc == DateTime.MinValue
+                                    ? null
+                                    : BackupFormat.Utc(file.ModifiedUtc),
+                                HasManifest = false,
+                                IsEmbyBackup = false,
+                                HasChecksumFile = file.HasSidecar,
+                                MetadataKnown = false,
+                            })
+                            .ToList();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                view.Error = "Could not list the backup destination: " + ex.Message;
+            }
 
             return view;
         }

@@ -26,7 +26,7 @@ namespace EmbyBackup
             BackupRuntime.Configure(
                 applicationPaths.ProgramDataPath,
                 Path.Combine(applicationPaths.PluginsPath, "EmbyBackup"),
-                assemblyVersion == null ? "1.1.1" : assemblyVersion.ToString());
+                assemblyVersion == null ? "1.2.0" : assemblyVersion.ToString());
         }
 
         public override string Name

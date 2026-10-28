@@ -205,7 +205,7 @@ namespace EmbyBackup.Core
     {
         public string ProgramDataPath { get; set; }
         public string PluginDataPath { get; set; }
-        public string DestinationPath { get; set; }
+        public BackupDestinationSettings Destination { get; set; }
         public string EmbyVersion { get; set; }
         public string PluginVersion { get; set; }
         public string Compression { get; set; }
@@ -259,6 +259,92 @@ namespace EmbyBackup.Core
             {
                 return Sha256(sha.ComputeHash(input));
             }
+        }
+
+        /// <summary>Content of the .sha256 sidecar, in the usual "sha256sum" format.</summary>
+        public static string SidecarText(string sha256, string fileName)
+        {
+            return sha256 + "  " + fileName + Environment.NewLine;
+        }
+
+        /// <summary>
+        /// The sidecar is also the ownership marker for remote destinations, where reading every manifest
+        /// would mean downloading every archive. It is only written by this plugin.
+        /// </summary>
+        public static bool IsValidSidecar(string text, string fileName, out string sha256)
+        {
+            sha256 = null;
+            if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(fileName))
+            {
+                return false;
+            }
+
+            var line = text.Replace("\r", string.Empty).Split('\n')[0].Trim();
+            if (line.Length < 67)
+            {
+                return false;
+            }
+
+            var hash = line.Substring(0, 64);
+            foreach (var c in hash)
+            {
+                var isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+                if (!isHex)
+                {
+                    return false;
+                }
+            }
+
+            var rest = line.Substring(64).TrimStart(' ', '\t');
+            rest = rest.TrimStart('*').Trim();
+            if (!string.Equals(rest, fileName, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            sha256 = hash.ToLowerInvariant();
+            return true;
+        }
+
+        /// <summary>
+        /// Extracts the timestamp from "emby-backup-yyyyMMdd-HHmmssZ.zip" (optionally with a -N collision
+        /// suffix). Remote listings do not always report a reliable modification time.
+        /// </summary>
+        public static bool TryParseArchiveStamp(string fileName, out DateTime utc)
+        {
+            utc = DateTime.MinValue;
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                return false;
+            }
+
+            var name = fileName;
+            if (name.EndsWith(BackupConstants.PartialSuffix, StringComparison.OrdinalIgnoreCase))
+            {
+                name = name.Substring(0, name.Length - BackupConstants.PartialSuffix.Length);
+            }
+
+            if (!name.StartsWith(BackupConstants.ArchivePrefix, StringComparison.OrdinalIgnoreCase)
+                || !name.EndsWith(BackupConstants.ArchiveSuffix, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            name = name.Substring(
+                BackupConstants.ArchivePrefix.Length,
+                name.Length - BackupConstants.ArchivePrefix.Length - BackupConstants.ArchiveSuffix.Length);
+
+            if (name.Length < 16)
+            {
+                return false;
+            }
+
+            return DateTime.TryParseExact(
+                name.Substring(0, 16),
+                "yyyyMMdd-HHmmss'Z'",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+                out utc);
         }
     }
 

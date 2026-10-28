@@ -64,7 +64,7 @@ namespace EmbyBackup
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(plugin.Configuration.DestinationPath))
+            if (!BackupRuntime.GetDestinationSettings().IsConfigured)
             {
                 _logger.Warn("Scheduled Emby Backup skipped: no backup destination is configured.");
                 return;

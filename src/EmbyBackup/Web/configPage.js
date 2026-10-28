@@ -96,19 +96,46 @@ define(['baseView', 'loading'], function (BaseView, loading) {
 
     function loadSettings(view) {
         return ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+            q(view, 'ebDestinationType').value = config.DestinationType || 'Local';
             q(view, 'ebDestination').value = config.DestinationPath || '';
+            q(view, 'ebNetworkPath').value = config.NetworkPath || '';
+            q(view, 'ebNetworkUser').value = config.NetworkUsername || '';
+            q(view, 'ebNetworkPassword').value = config.NetworkPassword || '';
+            q(view, 'ebNetworkDomain').value = config.NetworkDomain || '';
+            q(view, 'ebFtpHost').value = config.FtpHost || '';
+            q(view, 'ebFtpPort').value = config.FtpPort || 21;
+            q(view, 'ebFtpPath').value = config.FtpPath || '/';
+            q(view, 'ebFtpUser').value = config.FtpUsername || '';
+            q(view, 'ebFtpPassword').value = config.FtpPassword || '';
+            q(view, 'ebFtpTls').checked = !!config.FtpUseTls;
+            q(view, 'ebFtpPassive').checked = config.FtpPassive !== false;
+            q(view, 'ebFtpCert').checked = !!config.FtpAcceptAnyCertificate;
             q(view, 'ebRetention').value = config.RetentionCount || 7;
             q(view, 'ebCompression').value = config.Compression || 'Optimal';
             q(view, 'ebBusySeconds').value = config.BusyTimeoutSeconds || 60;
             q(view, 'ebScheduled').checked = config.ScheduledBackupsEnabled !== false;
             q(view, 'ebVerify').checked = config.VerifyAfterCreate !== false;
+            updateDestinationFields(view);
             setDirty(view, false);
         });
     }
 
     function saveSettings(view) {
         return ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+            config.DestinationType = q(view, 'ebDestinationType').value;
             config.DestinationPath = q(view, 'ebDestination').value.trim();
+            config.NetworkPath = q(view, 'ebNetworkPath').value.trim();
+            config.NetworkUsername = q(view, 'ebNetworkUser').value.trim();
+            config.NetworkPassword = q(view, 'ebNetworkPassword').value;
+            config.NetworkDomain = q(view, 'ebNetworkDomain').value.trim();
+            config.FtpHost = q(view, 'ebFtpHost').value.trim();
+            config.FtpPort = Math.max(1, Math.min(65535, parseInt(q(view, 'ebFtpPort').value, 10) || 21));
+            config.FtpPath = q(view, 'ebFtpPath').value.trim() || '/';
+            config.FtpUsername = q(view, 'ebFtpUser').value.trim();
+            config.FtpPassword = q(view, 'ebFtpPassword').value;
+            config.FtpUseTls = q(view, 'ebFtpTls').checked;
+            config.FtpPassive = q(view, 'ebFtpPassive').checked;
+            config.FtpAcceptAnyCertificate = q(view, 'ebFtpCert').checked;
             config.RetentionCount = Math.max(1, Math.min(365, parseInt(q(view, 'ebRetention').value, 10) || 7));
             config.Compression = q(view, 'ebCompression').value;
             config.BusyTimeoutSeconds = Math.max(5, Math.min(600, parseInt(q(view, 'ebBusySeconds').value, 10) || 60));
@@ -119,6 +146,27 @@ define(['baseView', 'loading'], function (BaseView, loading) {
                 setDirty(view, false);
                 return result;
             });
+        });
+    }
+
+    function updateDestinationFields(view) {
+        var type = q(view, 'ebDestinationType').value;
+
+        q(view, 'ebLocalFields').hidden = type !== 'Local';
+        q(view, 'ebNetworkFields').hidden = type !== 'Network';
+        q(view, 'ebFtpFields').hidden = type !== 'Ftp';
+        q(view, 'ebCredentialNote').hidden = type === 'Local';
+
+        serverIsWindows().then(function (windows) {
+            var path = q(view, 'ebNetworkPath');
+            path.placeholder = windows ? '\\\\nas\\backups\\emby' : '/mnt/nas/emby';
+            q(view, 'ebNetworkBrowse').hidden = windows;
+            q(view, 'ebNetworkCredentials').hidden = !windows;
+            q(view, 'ebNetworkHint').textContent = windows
+                ? 'UNC path, for example \\\\nas\\backups\\emby. Leave the credentials empty when the '
+                    + 'Windows session that runs Emby can already write to the share.'
+                : 'Mount the SMB share in the operating system (for example with cifs in /etc/fstab) and enter '
+                    + 'the mount point here. Emby cannot mount shares by itself.';
         });
     }
 
@@ -133,6 +181,10 @@ define(['baseView', 'loading'], function (BaseView, loading) {
         var started = q(view, 'ebStarted');
         started.textContent = fmtDate(status.StartedUtc);
         q(view, 'ebFinished').textContent = fmtDate(status.FinishedUtc);
+
+        var destination = q(view, 'ebDestinationStatus');
+        destination.textContent = status.DestinationPath || '\u2014';
+        destination.title = status.DestinationPath || '';
 
         var last = status.Last;
         q(view, 'ebLastBackup').textContent = last
@@ -208,7 +260,9 @@ define(['baseView', 'loading'], function (BaseView, loading) {
         var note = q(view, 'ebFilesNote');
         note.textContent = result.Error
             ? result.Error
-            : (result.DestinationPath ? 'Destination: ' + result.DestinationPath : 'No destination configured.');
+            : (result.DestinationPath
+                ? (result.DestinationType ? result.DestinationType + ': ' : 'Destination: ') + result.DestinationPath
+                : 'No destination configured.');
 
         q(view, 'ebFilesEmpty').hidden = files.length > 0;
         q(view, 'ebFilesWrap').hidden = files.length === 0;
@@ -219,10 +273,16 @@ define(['baseView', 'loading'], function (BaseView, loading) {
             row.appendChild(el('td', 'ebName', file.FileName));
             row.appendChild(el('td', null, fmtBytes(file.Bytes)));
             row.appendChild(el('td', null,
-                file.HasManifest ? ((file.FileCount || 0) + ' files / ' + (file.DatabaseCount || 0) + ' DB') : '\u2014'));
+                file.MetadataKnown && file.HasManifest
+                    ? ((file.FileCount || 0) + ' files / ' + (file.DatabaseCount || 0) + ' DB')
+                    : '\u2014'));
 
             var manifest = el('td');
-            manifest.appendChild(statusRow(file.IsEmbyBackup ? 'Emby Backup' : 'Unknown', file.IsEmbyBackup));
+            if (!file.MetadataKnown) {
+                manifest.appendChild(statusRow('Not checked', false));
+            } else {
+                manifest.appendChild(statusRow(file.IsEmbyBackup ? 'Emby Backup' : 'Unknown', file.IsEmbyBackup));
+            }
             if (file.Error) {
                 manifest.appendChild(el('div', 'ebError ebSmall', file.Error));
             }
@@ -308,8 +368,10 @@ define(['baseView', 'loading'], function (BaseView, loading) {
         node.hidden = !text;
     }
 
-    function openBrowse(view) {
-        var start = q(view, 'ebDestination').value.trim();
+    function openBrowse(view, targetId) {
+        var target = targetId || 'ebDestination';
+        view.__ebBrowseTarget = target;
+        var start = q(view, target).value.trim();
         q(view, 'ebBrowseList').textContent = '';
         q(view, 'ebBrowsePath').textContent = '';
         q(view, 'ebBrowseUse').disabled = true;
@@ -465,7 +527,8 @@ define(['baseView', 'loading'], function (BaseView, loading) {
         if (!path) {
             return;
         }
-        q(view, 'ebDestination').value = path;
+        var target = view.__ebBrowseTarget || 'ebDestination';
+        q(view, target).value = path;
         setDirty(view, true);
         closeBrowse(view);
     }
@@ -525,6 +588,32 @@ define(['baseView', 'loading'], function (BaseView, loading) {
         });
     }
 
+    function testDestination(view) {
+        var button = q(view, 'ebTest');
+        button.disabled = true;
+        loading.show();
+
+        // Save first: the endpoint reads the stored configuration, so the test always checks what a
+        // scheduled backup would actually use.
+        saveSettings(view).then(function (result) {
+            Dashboard.processPluginConfigurationUpdateResult(result);
+            return postJson('EmbyBackup/TestDestination', {});
+        }).then(function (result) {
+            loading.hide();
+            button.disabled = false;
+            var message = result.Message
+                || (result.Success ? 'The destination is ready.' : 'The destination is not available.');
+            if (result.Location) {
+                message += '\n\n' + result.Location;
+            }
+            showModal(view, result.Success ? 'Destination ready' : 'Destination not available', message);
+        }, function () {
+            loading.hide();
+            button.disabled = false;
+            toast('Could not test the destination.');
+        });
+    }
+
     function cancelBackup(view) {
         q(view, 'ebCancel').disabled = true;
         postJson('EmbyBackup/Cancel', {}).then(function (result) {
@@ -566,13 +655,23 @@ define(['baseView', 'loading'], function (BaseView, loading) {
             return false;
         });
 
-        ['ebDestination', 'ebRetention', 'ebCompression', 'ebBusySeconds', 'ebScheduled', 'ebVerify'].forEach(function (id) {
+        [
+            'ebDestination', 'ebNetworkPath', 'ebNetworkUser', 'ebNetworkPassword', 'ebNetworkDomain',
+            'ebFtpHost', 'ebFtpPort', 'ebFtpPath', 'ebFtpUser', 'ebFtpPassword', 'ebFtpTls', 'ebFtpPassive',
+            'ebFtpCert', 'ebRetention', 'ebCompression', 'ebBusySeconds', 'ebScheduled', 'ebVerify'
+        ].forEach(function (id) {
             var input = q(view, id);
             input.addEventListener('input', function () { setDirty(view, true); });
             input.addEventListener('change', function () { setDirty(view, true); });
         });
 
+        q(view, 'ebDestinationType').addEventListener('change', function () {
+            setDirty(view, true);
+            updateDestinationFields(view);
+        });
+
         q(view, 'ebRun').addEventListener('click', function () { runBackup(view); });
+        q(view, 'ebTest').addEventListener('click', function () { testDestination(view); });
         q(view, 'ebCancel').addEventListener('click', function () { cancelBackup(view); });
         q(view, 'ebRefresh').addEventListener('click', function () { refreshLists(view); });
         q(view, 'ebModalClose').addEventListener('click', function () { hideModal(view); });
@@ -589,7 +688,8 @@ define(['baseView', 'loading'], function (BaseView, loading) {
             }
         });
 
-        q(view, 'ebBrowse').addEventListener('click', function () { openBrowse(view); });
+        q(view, 'ebBrowse').addEventListener('click', function () { openBrowse(view, 'ebDestination'); });
+        q(view, 'ebNetworkBrowse').addEventListener('click', function () { openBrowse(view, 'ebNetworkPath'); });
         q(view, 'ebBrowseClose').addEventListener('click', function () { closeBrowse(view); });
         q(view, 'ebBrowseUse').addEventListener('click', function () { useCurrentFolder(view); });
         q(view, 'ebBrowseUp').addEventListener('click', function () { goUp(view); });

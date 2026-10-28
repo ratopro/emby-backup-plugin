@@ -13,6 +13,8 @@ La versión lista para instalar está en [Releases](https://github.com/ratopro/e
 
 ## Versiones
 
+- **1.2.0**: destino seleccionable **Local**, **red SMB** o **FTP/FTPS**, con *Test destination* y
+  credenciales guardadas en la configuración.
 - **1.1.1**: comprueba la escritura del destino antes de empezar y explica cómo dar permisos a la cuenta
   de Emby cuando la carpeta no es accesible.
 - **1.1.0**: explorador de carpetas del servidor junto a *Backup destination*; `Esc` cierra los
@@ -66,26 +68,61 @@ incluye en `system/`.
 
 | Ajuste | Descripción |
 |---|---|
-| **Backup destination** | Ruta absoluta, fuera del Data Folder. Local, montada o UNC. El botón de carpeta junto al campo abre un explorador del sistema del servidor. |
+| **Destination type** | **Local folder**, **Network share (SMB)** o **FTP / FTPS server**. La página muestra solo los campos del tipo elegido. |
+| **Backup folder** (Local) | Ruta absoluta, fuera del Data Folder. |
+| **Share path** (Network) | UNC `\\servidor\recurso\carpeta` en Windows; punto de montaje en Linux/Docker/NAS. |
+| **Server / Port / Remote folder** (FTP) | Host, puerto (21 por defecto) y carpeta remota (`/` es la carpeta del usuario). Se crea si no existe. |
 | **Backups to keep** | Número de ZIP que se conservan (por defecto 7). |
 | **Compression** | `Fastest`, `Optimal` o `NoCompression`. |
 | **Database busy timeout** | Segundos de espera si Emby mantiene bloqueada una base. |
 | **Run a backup automatically every day at 03:00** | Activa o desactiva la tarea programada. |
 | **Verify the archive after creating it** | Relee el ZIP y compara todos los SHA-256. |
+| **Test destination** | Guarda los ajustes y comprueba que el destino existe y admite escritura, sin lanzar una copia. |
 
 Ejemplos de destino:
 
 - Linux: `/mnt/backups/emby`
 - Windows: `D:\Backups\Emby`
-- NAS por SMB: `\\nas\backups\emby`
+- NAS por SMB: `\\nas\backups\emby` (Windows) o `/mnt/nas/backups` si ya está montado
 - Docker: monta un volumen, por ejemplo `-v /host/backups:/backups`, y usa `/backups/emby`
+- FTP: `ftp.example.com`, puerto `21`, carpeta `/emby`
 
 El destino no puede estar dentro del Data Folder; el plugin lo rechaza con un mensaje claro. Cada
 ejecución manual guarda antes los ajustes.
 
+### Destino de red (SMB)
+
+- **Windows**: escribe la ruta UNC, por ejemplo `\\nas\backups\emby`. Si el servidor necesita
+  credenciales, rellena usuario, contraseña y dominio; el plugin abre la sesión SMB con
+  `WNetAddConnection2` antes de escribir. Si la sesión de Windows que ejecuta Emby ya tiene acceso al
+  recurso, deja las credenciales vacías.
+- **Linux, Docker y NAS**: el plugin **no monta** recursos. Monta el recurso SMB con el sistema
+  operativo (por ejemplo `cifs` en `/etc/fstab`) y escribe el punto de montaje. Las credenciales SMB se
+  ignoran en estas plataformas y el registro muestra un aviso.
+- En Windows el explorador de carpetas se oculta para este tipo, porque la API de Emby no navega por
+  rutas UNC; escribe la ruta a mano.
+
+### Destino FTP / FTPS
+
+- **Use FTPS (explicit TLS)** activa `AUTH TLS`; sin marcar, la conexión y las credenciales viajan sin
+  cifrar. Marca **Accept a self-signed certificate for this server** solo si usas un certificado
+  propio; sin esa opción el certificado debe ser válido para el host.
+- El ZIP se sube primero como `.partial`, se renombra al nombre final y después se sube su `.sha256`.
+  Si el servidor no permite renombrar, el plugin vuelve a subir el archivo con el nombre definitivo.
+- La retención en FTP se basa en el `.sha256` válido como prueba de propiedad; si alguien borra el
+  sidecar, el ZIP se conserva.
+- **Verificar** un archivo FTP lo descarga a una carpeta temporal del servidor, lo comprueba y lo borra.
+
+### Credenciales
+
+Las contraseñas de red y FTP se guardan **en texto plano** en
+`plugins/configurations/EmbyBackup.xml`, igual que el resto de ajustes del plugin. Cualquiera con acceso
+de lectura a ese fichero o a la copia de seguridad puede leerlas. Usa una cuenta dedicada con permiso
+solo sobre la carpeta de copias y no reutilices la contraseña de un administrador.
+
 ### Explorador de carpetas
 
-El icono de carpeta a la derecha de **Backup destination** abre un explorador que recorre las carpetas
+El icono de carpeta a la derecha de **Backup folder** (o **Share path** en Linux/Docker/NAS) abre un explorador que recorre las carpetas
 del servidor usando la propia API de Emby. Muestra únicamente carpetas (no archivos) y permite subir de
 nivel con **Up**, entrar en una carpeta con un clic y confirmar con **Use this folder**. Si el campo ya
 tiene una ruta, el explorador se abre en esa carpeta; si la ruta no existe, empieza en la raíz (o en la
@@ -154,6 +191,7 @@ Todas las rutas requieren un token de administrador:
 | `GET` | `/EmbyBackup/Files` |
 | `POST` | `/EmbyBackup/Run` |
 | `POST` | `/EmbyBackup/Cancel` |
+| `POST` | `/EmbyBackup/TestDestination` |
 | `POST` | `/EmbyBackup/Verify` (`{"FileName":"..."}`) |
 
 ## Qué se crea en el destino
@@ -164,6 +202,8 @@ emby-backup-20261028-112343Z.zip.sha256
 ```
 
 - El ZIP se escribe primero como `.partial` en el destino y se renombra de forma atómica al terminar.
+  En Local y red el `.partial` está en la propia carpeta; en FTP se construye en una carpeta temporal
+  del servidor, se sube como `.partial` y se renombra en el servidor.
 - `manifest.json` contiene versión del formato, versión del plugin y de Emby, sistema operativo, fecha,
   ruta de origen, compresión, lista de bases con `quick_check`, inventario de ficheros con SHA-256 y
   tamaños, exclusiones y advertencias.
@@ -171,7 +211,9 @@ emby-backup-20261028-112343Z.zip.sha256
 - El ZIP no crea una carpeta raíz: su contenido se corresponde con la raíz del Data Folder.
 
 La retención solo borra ZIP reconocidos por su manifiesto (`format: emby-server-backup`) y sus
-`.sha256`. Nunca toca otros ficheros del destino.
+`.sha256`. En FTP, donde leer el manifiesto obligaría a descargar cada ZIP, se acepta un `.sha256`
+válido como prueba de propiedad. Nunca toca otros ficheros del destino. Los `.partial` con más de
+24 horas también se eliminan.
 
 ## Verificación
 
@@ -183,6 +225,8 @@ con el botón **Verify**. Comprueba:
 - No hay entradas fuera del inventario (defensa contra archivos añadidos).
 - Las rutas no escapan del directorio de restauración.
 - El `.sha256` coincide con el ZIP.
+
+En FTP la verificación descarga primero el ZIP a una carpeta temporal y la borra al terminar.
 
 También puedes verificarlo a mano:
 
@@ -234,9 +278,10 @@ dotnet run -c Release --project tests/EmbyBackup.Tests
 
 El resultado es `src/EmbyBackup/bin/Release/netstandard2.0/EmbyBackup.dll`.
 
-Las pruebas del motor cubren: WAL real con la backup API, snapshots, ZIP, manifiesto, sidecar,
-verificación, retención segura, archivos ajenos, cancelación, path traversal, destino dentro del Data
-Folder, archivos corruptos, exclusión de binarios y de metadatos.
+Las 71 pruebas del motor cubren: WAL real con la backup API, snapshots, ZIP, manifiesto, sidecar,
+verificación, retención segura local y remota, archivos ajenos, cancelación, path traversal, destino
+dentro del Data Folder, archivos corruptos, exclusión de binarios y de metadatos, validación de los
+tres tipos de destino y análisis de listados FTP (Unix e IIS).
 
 ## Estructura
 
@@ -248,6 +293,7 @@ src/EmbyBackup/
   BackupRuntime.cs          Estado compartido y ejecución en segundo plano
   PluginConfiguration.cs    Ajustes persistidos en plugins/configurations/EmbyBackup.xml
   Core/                     Motor independiente de Emby (probado aparte)
+  Core/BackupDestinations.cs  Destinos Local, red y FTP/FTPS
   Web/                      Página de configuración (HTML + JS)
   Images/thumb.png          Miniatura
 tests/EmbyBackup.Tests/     Pruebas del motor
@@ -262,6 +308,10 @@ GUID del plugin: `5a3c44fa-8c66-4f07-b75e-4a8c6123852f`.
   guardar un estado inconsistente.
 - Los enlaces simbólicos se omiten y quedan reflejados como advertencia en el manifiesto.
 - El historial se guarda en el Data Folder del plugin (máx. 100 entradas) y no forma parte del ZIP.
+- En Linux/Docker/NAS el plugin no monta recursos SMB: el administrador debe montarlos. Las
+  credenciales SMB solo se usan en Windows.
+- FTP es síncrono y sin reanudación: si se corta la conexión, la copia falla y el `.partial` se limpia
+  en la siguiente ejecución. Para archivos muy grandes, valora un destino local o una unidad montada.
 
 ## Licencia
 

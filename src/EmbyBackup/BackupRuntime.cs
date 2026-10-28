@@ -160,6 +160,47 @@ namespace EmbyBackup
             }
         }
 
+        public static BackupDestinationSettings GetDestinationSettings()
+        {
+            var plugin = Plugin.Instance;
+            var configuration = plugin == null ? null : plugin.Configuration;
+            if (configuration == null)
+            {
+                return new BackupDestinationSettings();
+            }
+
+            configuration.Normalize();
+            return new BackupDestinationSettings
+            {
+                Type = configuration.DestinationType,
+                Path = string.Equals(configuration.DestinationType, BackupDestinationKinds.Network, StringComparison.Ordinal)
+                    ? configuration.NetworkPath
+                    : configuration.DestinationPath,
+                NetworkUsername = configuration.NetworkUsername,
+                NetworkPassword = configuration.NetworkPassword,
+                NetworkDomain = configuration.NetworkDomain,
+                FtpHost = configuration.FtpHost,
+                FtpPort = configuration.FtpPort,
+                FtpPath = configuration.FtpPath,
+                FtpUsername = configuration.FtpUsername,
+                FtpPassword = configuration.FtpPassword,
+                FtpUseTls = configuration.FtpUseTls,
+                FtpPassive = configuration.FtpPassive,
+                FtpAcceptAnyCertificate = configuration.FtpAcceptAnyCertificate,
+            };
+        }
+
+        public static IBackupDestination CreateDestination(Action<string> log)
+        {
+            EnsureConfigured();
+            return BackupDestinations.Create(GetDestinationSettings(), _programDataPath, log);
+        }
+
+        public static string DestinationLocation
+        {
+            get { return GetDestinationSettings().Location; }
+        }
+
         private static void Execute(
             ILogger logger,
             string embyVersion,
@@ -181,7 +222,7 @@ namespace EmbyBackup
                 {
                     ProgramDataPath = _programDataPath,
                     PluginDataPath = _pluginDataPath,
-                    DestinationPath = configuration.DestinationPath,
+                    Destination = GetDestinationSettings(),
                     EmbyVersion = embyVersion ?? "unknown",
                     PluginVersion = _pluginVersion,
                     Compression = configuration.Compression,

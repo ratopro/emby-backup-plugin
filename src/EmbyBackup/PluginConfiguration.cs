@@ -14,9 +14,44 @@ namespace EmbyBackup
         public bool ScheduledBackupsEnabled { get; set; } = true;
 
         /// <summary>
-        /// Absolute path where the ZIP files are written. Empty means "not configured yet".
+        /// Local, Network or Ftp. Matches BackupDestinationKinds in Core.
+        /// </summary>
+        public string DestinationType { get; set; } = "Local";
+
+        /// <summary>
+        /// Absolute path where the ZIP files are written for Local. Empty means "not configured yet".
         /// </summary>
         public string DestinationPath { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Network share path: UNC (\\server\share\folder) on Windows or a mount point on Linux/NAS.
+        /// </summary>
+        public string NetworkPath { get; set; } = string.Empty;
+
+        /// <summary>SMB credentials. Only used on Windows; the password is stored in this XML file as plain text.</summary>
+        public string NetworkUsername { get; set; } = string.Empty;
+
+        public string NetworkPassword { get; set; } = string.Empty;
+
+        public string NetworkDomain { get; set; } = string.Empty;
+
+        public string FtpHost { get; set; } = string.Empty;
+
+        public int FtpPort { get; set; } = 21;
+
+        /// <summary>Remote folder on the FTP server. "/" means the login folder.</summary>
+        public string FtpPath { get; set; } = "/";
+
+        public string FtpUsername { get; set; } = string.Empty;
+
+        public string FtpPassword { get; set; } = string.Empty;
+
+        /// <summary>Explicit FTPS (AUTH TLS). Plain FTP when false.</summary>
+        public bool FtpUseTls { get; set; }
+
+        public bool FtpPassive { get; set; } = true;
+
+        public bool FtpAcceptAnyCertificate { get; set; }
 
         /// <summary>
         /// Number of successful backup ZIPs to keep. Older ones created by this plugin are deleted.
@@ -40,7 +75,19 @@ namespace EmbyBackup
 
         public void Normalize()
         {
+            DestinationType = EmbyBackup.Core.BackupDestinationKinds.Normalize(DestinationType);
             DestinationPath = (DestinationPath ?? string.Empty).Trim();
+            NetworkPath = (NetworkPath ?? string.Empty).Trim();
+            NetworkUsername = (NetworkUsername ?? string.Empty).Trim();
+            NetworkPassword = NetworkPassword ?? string.Empty;
+            NetworkDomain = (NetworkDomain ?? string.Empty).Trim();
+
+            FtpHost = (FtpHost ?? string.Empty).Trim();
+            FtpPort = Math.Max(1, Math.Min(65535, FtpPort <= 0 ? 21 : FtpPort));
+            FtpPath = EmbyBackup.Core.BackupDestinationSettings.NormalizeFtpPath(FtpPath);
+            FtpUsername = (FtpUsername ?? string.Empty).Trim();
+            FtpPassword = FtpPassword ?? string.Empty;
+
             RetentionCount = Math.Max(1, Math.Min(365, RetentionCount));
             BusyTimeoutSeconds = Math.Max(5, Math.Min(600, BusyTimeoutSeconds));
 

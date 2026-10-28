@@ -5,9 +5,9 @@
     <LangVersion>latest</LangVersion>
     <RootNamespace>EmbyBackup</RootNamespace>
     <AssemblyName>EmbyBackup</AssemblyName>
-    <Version>1.1.1</Version>
-    <AssemblyVersion>1.1.1.0</AssemblyVersion>
-    <FileVersion>1.1.1.0</FileVersion>
+    <Version>1.2.0</Version>
+    <AssemblyVersion>1.2.0.0</AssemblyVersion>
+    <FileVersion>1.2.0.0</FileVersion>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <Nullable>disable</Nullable>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>

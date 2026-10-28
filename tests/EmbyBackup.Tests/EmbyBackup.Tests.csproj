@@ -13,12 +13,15 @@
     <!-- Compile the engine directly: it has no Emby dependency, so the tests do not need the Emby SDK. -->
     <Compile Include="../../src/EmbyBackup/Core/ArchiveBuilder.cs" Link="Core/ArchiveBuilder.cs" />
     <Compile Include="../../src/EmbyBackup/Core/BackupCatalog.cs" Link="Core/BackupCatalog.cs" />
+    <Compile Include="../../src/EmbyBackup/Core/BackupDestinations.cs" Link="Core/BackupDestinations.cs" />
+    <Compile Include="../../src/EmbyBackup/Core/BackupDestinationSettings.cs" Link="Core/BackupDestinationSettings.cs" />
     <Compile Include="../../src/EmbyBackup/Core/BackupHistoryStore.cs" Link="Core/BackupHistoryStore.cs" />
     <Compile Include="../../src/EmbyBackup/Core/BackupInventory.cs" Link="Core/BackupInventory.cs" />
     <Compile Include="../../src/EmbyBackup/Core/BackupModels.cs" Link="Core/BackupModels.cs" />
     <Compile Include="../../src/EmbyBackup/Core/BackupService.cs" Link="Core/BackupService.cs" />
     <Compile Include="../../src/EmbyBackup/Core/BackupVerifier.cs" Link="Core/BackupVerifier.cs" />
     <Compile Include="../../src/EmbyBackup/Core/PathSafety.cs" Link="Core/PathSafety.cs" />
+    <Compile Include="../../src/EmbyBackup/Core/NetworkShareConnector.cs" Link="Core/NetworkShareConnector.cs" />
     <Compile Include="../../src/EmbyBackup/Core/RetentionService.cs" Link="Core/RetentionService.cs" />
     <Compile Include="../../src/EmbyBackup/Core/SqliteSnapshotService.cs" Link="Core/SqliteSnapshotService.cs" />
   </ItemGroup>

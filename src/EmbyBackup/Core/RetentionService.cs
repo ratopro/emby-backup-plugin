@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 
 namespace EmbyBackup.Core
@@ -13,35 +12,35 @@ namespace EmbyBackup.Core
     }
 
     /// <summary>
-    /// Removes old backups created by this plugin. Files without a readable Emby Backup manifest are never
-    /// deleted, and neither are files whose name does not match this plugin's pattern.
+    /// Removes old backups created by this plugin. Files that cannot be proven to belong to the plugin are
+    /// never deleted: a valid manifest in the archive (folders) or a valid .sha256 sidecar (FTP).
     /// </summary>
     public sealed class RetentionService
     {
-        public RetentionResult Apply(string destinationPath, int keep, Action<string> log)
+        public RetentionResult Apply(IBackupDestination destination, int keep, Action<string> log)
         {
             var result = new RetentionResult();
             log = log ?? (_ => { });
 
-            if (string.IsNullOrWhiteSpace(destinationPath) || !Directory.Exists(destinationPath))
+            if (destination == null)
             {
                 return result;
             }
 
             keep = Math.Max(1, Math.Min(365, keep));
 
-            List<BackupArchiveInfo> archives;
+            List<BackupDestinationFile> archives;
             try
             {
-                archives = BackupCatalog.List(destinationPath)
-                    .Where(a => a.IsEmbyBackup && a.HasManifest)
-                    .OrderByDescending(a => a.CreatedUtcValue)
-                    .ThenByDescending(a => a.FileName, StringComparer.OrdinalIgnoreCase)
+                archives = destination.ListArchives()
+                    .Where(destination.IsOwned)
+                    .OrderByDescending(GetStamp)
+                    .ThenByDescending(a => a.Name, StringComparer.OrdinalIgnoreCase)
                     .ToList();
             }
             catch (Exception ex)
             {
-                result.Warnings.Add("Could not inspect the backup folder for retention: " + ex.Message);
+                result.Warnings.Add("Could not inspect the backup destination for retention: " + ex.Message);
                 return result;
             }
 
@@ -50,59 +49,54 @@ namespace EmbyBackup.Core
             {
                 try
                 {
-                    if (File.Exists(archive.FullPath))
-                    {
-                        File.Delete(archive.FullPath);
-                        result.Deleted.Add(archive.FileName);
-                        log("Retention removed old backup: " + archive.FileName);
-                    }
-
-                    DeleteSidecar(archive.FullPath);
+                    destination.Delete(archive.Name, log);
+                    result.Deleted.Add(archive.Name);
                 }
                 catch (Exception ex)
                 {
-                    result.Warnings.Add("Could not remove old backup " + archive.FileName + ": " + ex.Message);
+                    result.Warnings.Add("Could not remove old backup " + archive.Name + ": " + ex.Message);
                 }
             }
 
-            DeleteStalePartials(destinationPath, result, log);
+            DeleteStalePartials(destination, result, log);
             return result;
         }
 
-        public static void DeleteSidecar(string archivePath)
+        private static DateTime GetStamp(BackupDestinationFile file)
         {
-            try
+            DateTime stamp;
+            if (BackupFormat.TryParseArchiveStamp(file.Name, out stamp))
             {
-                var sidecar = archivePath + BackupConstants.SidecarSuffix;
-                if (File.Exists(sidecar))
-                {
-                    File.Delete(sidecar);
-                }
+                return stamp;
             }
-            catch
-            {
-                // The ZIP is already gone; a stray .sha256 file is harmless.
-            }
+
+            return file.ModifiedUtc == DateTime.MinValue ? DateTime.MaxValue : file.ModifiedUtc;
         }
 
-        private static void DeleteStalePartials(string destinationPath, RetentionResult result, Action<string> log)
+        private static void DeleteStalePartials(IBackupDestination destination, RetentionResult result, Action<string> log)
         {
             try
             {
-                foreach (var path in Directory.GetFiles(
-                    destinationPath,
-                    BackupConstants.ArchivePrefix + "*" + BackupConstants.ArchiveSuffix + BackupConstants.PartialSuffix,
-                    SearchOption.TopDirectoryOnly))
+                foreach (var file in destination.ListAll())
                 {
-                    var file = new FileInfo(path);
-                    if ((DateTime.UtcNow - file.LastWriteTimeUtc).TotalHours < 24)
+                    if (string.IsNullOrEmpty(file.Name)
+                        || !file.Name.StartsWith(BackupConstants.ArchivePrefix, StringComparison.OrdinalIgnoreCase)
+                        || !file.Name.EndsWith(
+                            BackupConstants.ArchiveSuffix + BackupConstants.PartialSuffix,
+                            StringComparison.OrdinalIgnoreCase))
                     {
                         continue;
                     }
 
-                    file.Delete();
+                    var stamp = GetStamp(file);
+                    if (stamp == DateTime.MaxValue || (DateTime.UtcNow - stamp).TotalHours < 24)
+                    {
+                        continue;
+                    }
+
+                    destination.Delete(file.Name, log);
                     result.Deleted.Add(file.Name);
-                    log("Retention removed an unfinished backup: " + file.Name);
+                    log("Removed an unfinished backup: " + file.Name);
                 }
             }
             catch (Exception ex)

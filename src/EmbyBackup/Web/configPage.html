@@ -39,6 +39,10 @@
         }
         .ebPage .ebField input:focus, .ebPage .ebField select:focus { outline: 2px solid var(--eb-accent); outline-offset: 1px; }
         .ebPage .ebField .ebHint { font-size: .82em; line-height: 1.45; }
+        .ebPage .ebDestGroup { grid-column: 1 / -1; display: flex; flex-direction: column; gap: .9em; }
+        .ebPage .ebDestGroup[hidden] { display: none; }
+        /* Author display rules (grid, flex) would otherwise win over the hidden attribute. */
+        .ebPage [hidden] { display: none !important; }
         .ebPage .ebChecks { display: flex; flex-direction: column; gap: .6em; }
         .ebPage .ebCheck { display: flex; align-items: flex-start; gap: .6em; line-height: 1.45; cursor: pointer; }
         .ebPage .ebCheck input { margin-top: .2em; width: 1.1em; height: 1.1em; accent-color: var(--eb-accent); flex: none; }
@@ -127,21 +131,93 @@
                 <form class="ebCard" id="ebSettingsForm">
                     <h2>Settings</h2>
                     <div class="ebGrid">
-                        <label class="ebField ebWide">Backup destination
-                            <span class="ebInputRow">
-                                <input id="ebDestination" type="text" autocomplete="off" spellcheck="false"
-                                       placeholder="Absolute path, mounted folder or UNC share (not inside Emby's data folder)">
-                                <button class="ebBtn ebIconBtn" type="button" id="ebBrowse"
-                                        title="Browse folders on the server" aria-label="Browse folders on the server">
-                                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                        <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"></path>
-                                    </svg>
-                                </button>
-                            </span>
-                            <span class="ebHint">Examples: /mnt/backups/emby, D:\Backups\Emby, \\nas\backups\emby.
-                                The folder must be outside Emby's program data folder.</span>
+                        <label class="ebField ebWide">Destination type
+                            <select id="ebDestinationType">
+                                <option value="Local">Local folder</option>
+                                <option value="Network">Network share (SMB)</option>
+                                <option value="Ftp">FTP / FTPS server</option>
+                            </select>
+                            <span class="ebHint">Where Emby Backup stores the archives. Local and Network write
+                                files; FTP uploads them.</span>
                         </label>
-                        <label class="ebField">Backups to keep
+
+                        <div class="ebDestGroup" id="ebLocalFields">
+                            <label class="ebField">Backup folder
+                                <span class="ebInputRow">
+                                    <input id="ebDestination" type="text" autocomplete="off" spellcheck="false"
+                                           placeholder="Absolute path (not inside Emby's data folder)">
+                                    <button class="ebBtn ebIconBtn" type="button" id="ebBrowse"
+                                            title="Browse folders on the server" aria-label="Browse folders on the server">
+                                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                            <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"></path>
+                                        </svg>
+                                    </button>
+                                </span>
+                                <span class="ebHint">Examples: /mnt/backups/emby, D:\Backups\Emby. The folder must be
+                                    outside Emby's program data folder.</span>
+                            </label>
+                        </div>
+
+                        <div class="ebDestGroup" id="ebNetworkFields" hidden>
+                            <label class="ebField">Share path
+                                <span class="ebInputRow">
+                                    <input id="ebNetworkPath" type="text" autocomplete="off" spellcheck="false">
+                                    <button class="ebBtn ebIconBtn" type="button" id="ebNetworkBrowse"
+                                            title="Browse folders on the server" aria-label="Browse folders on the server">
+                                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                            <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"></path>
+                                        </svg>
+                                    </button>
+                                </span>
+                                <span class="ebHint" id="ebNetworkHint"></span>
+                            </label>
+                            <div class="ebGrid" id="ebNetworkCredentials">
+                                <label class="ebField">User name
+                                    <input id="ebNetworkUser" type="text" autocomplete="off" spellcheck="false">
+                                </label>
+                                <label class="ebField">Password
+                                    <input id="ebNetworkPassword" type="password" autocomplete="new-password">
+                                </label>
+                                <label class="ebField">Domain (optional)
+                                    <input id="ebNetworkDomain" type="text" autocomplete="off" spellcheck="false">
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="ebDestGroup" id="ebFtpFields" hidden>
+                            <div class="ebGrid">
+                                <label class="ebField">Server
+                                    <input id="ebFtpHost" type="text" autocomplete="off" spellcheck="false"
+                                           placeholder="ftp.example.com">
+                                </label>
+                                <label class="ebField">Port
+                                    <input id="ebFtpPort" type="number" min="1" max="65535" step="1" value="21">
+                                </label>
+                                <label class="ebField">Remote folder
+                                    <input id="ebFtpPath" type="text" autocomplete="off" spellcheck="false"
+                                           placeholder="/emby">
+                                </label>
+                                <label class="ebField">User name
+                                    <input id="ebFtpUser" type="text" autocomplete="off" spellcheck="false">
+                                </label>
+                                <label class="ebField">Password
+                                    <input id="ebFtpPassword" type="password" autocomplete="new-password">
+                                </label>
+                            </div>
+                            <div class="ebChecks">
+                                <label class="ebCheck"><input id="ebFtpTls" type="checkbox">
+                                    <span>Use FTPS (explicit TLS). Leave it off for plain FTP.</span></label>
+                                <label class="ebCheck"><input id="ebFtpPassive" type="checkbox" checked>
+                                    <span>Passive mode (recommended)</span></label>
+                                <label class="ebCheck"><input id="ebFtpCert" type="checkbox">
+                                    <span>Accept a self-signed certificate for this server</span></label>
+                            </div>
+                            <span class="ebHint">The archive is uploaded as <code>.partial</code>, renamed, and followed
+                                by its <code>.sha256</code> file. Verifying an FTP archive downloads it to a temporary
+                                file first.</span>
+                        </div>
+
+                        <label class="ebField ebWide">Backups to keep
                             <input id="ebRetention" type="number" min="1" max="365" step="1" value="7">
                             <span class="ebHint">Only archives created by this plugin are removed.</span>
                         </label>
@@ -165,8 +241,14 @@
                             <span>Verify the archive after creating it (reads it back and compares every SHA-256)</span></label>
                     </div>
 
+                    <span class="ebMuted ebSmall" id="ebCredentialNote" hidden>
+                        Network and FTP passwords are saved in <code>plugins/configurations/EmbyBackup.xml</code> as plain text.
+                        Use a dedicated account with access only to the backup destination.
+                    </span>
+
                     <div class="ebActions">
                         <button class="ebBtn ebPrimary" type="submit">Save settings</button>
+                        <button class="ebBtn" type="button" id="ebTest">Test destination</button>
                         <span class="ebMuted ebSmall" id="ebDirty"></span>
                     </div>
                 </form>
@@ -179,6 +261,7 @@
                     <div class="ebProgress" aria-hidden="true"><span id="ebBar"></span></div>
                     <div id="ebMessage" class="ebMuted">Reading the current state...</div>
                     <div class="ebMeta">
+                        <span>Destination: <b id="ebDestinationStatus">&mdash;</b></span>
                         <span>Started: <b id="ebStarted">&mdash;</b></span>
                         <span>Finished: <b id="ebFinished">&mdash;</b></span>
                         <span>Last backup: <b id="ebLastBackup">&mdash;</b></span>

@@ -31,37 +31,41 @@ namespace EmbyBackup.Core
             var progress = request.Progress ?? ((p, s) => { });
 
             string workDirectory = null;
-            string partialPath = null;
-            string finalPath = null;
+            string stagingPath = null;
             string finalName = null;
-            string destination = null;
+            string destinationLocation = null;
+            IBackupDestination destination = null;
             var published = false;
 
             try
             {
                 Validate(request);
-                destination = Path.GetFullPath(request.DestinationPath);
+                destination = BackupDestinations.Create(request.Destination, request.ProgramDataPath, log);
+                destination.Prepare();
+                destinationLocation = destination.Location;
                 progress(1, "Preparing");
 
                 var stamp = BackupFormat.FileStamp(startedUtc);
                 var baseName = BackupConstants.ArchivePrefix + stamp;
                 finalName = baseName + BackupConstants.ArchiveSuffix;
+                var existing = new HashSet<string>(
+                    destination.ListAll().Select(file => file.Name),
+                    StringComparer.OrdinalIgnoreCase);
                 var collision = 1;
-                while (File.Exists(Path.Combine(destination, finalName))
-                    || File.Exists(Path.Combine(destination, finalName + BackupConstants.PartialSuffix)))
+                while (existing.Contains(finalName)
+                    || existing.Contains(finalName + BackupConstants.PartialSuffix))
                 {
                     finalName = baseName + "-" + collision.ToString(System.Globalization.CultureInfo.InvariantCulture)
                         + BackupConstants.ArchiveSuffix;
                     collision++;
                 }
 
-                finalPath = Path.Combine(destination, finalName);
-                partialPath = finalPath + BackupConstants.PartialSuffix;
+                stagingPath = destination.CreateStagingPath(finalName);
 
                 workDirectory = CreateWorkDirectory(request, warnings, log);
                 CleanupStaleWorkDirectories(request, log);
 
-                log("Starting backup of " + request.ProgramDataPath + " to " + destination);
+                log("Starting backup of " + request.ProgramDataPath + " to " + destination.Location);
 
                 var exclusions = AdditionalExclusions(request);
                 var scanner = new BackupInventoryScanner(request.ProgramDataPath, exclusions);
@@ -77,7 +81,10 @@ namespace EmbyBackup.Core
                 }
 
                 var estimatedBytes = inventory.Files.Sum(f => f.Length) + inventory.Databases.Sum(f => f.Length);
-                CheckFreeSpace(destination, estimatedBytes, warnings);
+                if (destination.CanCheckFreeSpace)
+                {
+                    CheckFreeSpace(destination.LocalRootPath, estimatedBytes, warnings);
+                }
 
                 var sources = new List<ArchiveSource>();
                 foreach (var file in inventory.Files)
@@ -133,7 +140,7 @@ namespace EmbyBackup.Core
                 });
 
                 var build = builder.Build(
-                    partialPath,
+                    stagingPath,
                     request.PluginVersion,
                     request.EmbyVersion,
                     request.ProgramDataPath,
@@ -162,13 +169,16 @@ namespace EmbyBackup.Core
                 }
 
                 progress(96, "Publishing archive");
-                File.Move(partialPath, finalPath);
-                partialPath = null;
+                var commit = destination.Commit(stagingPath, finalName, build.Sha256, log);
+                stagingPath = null;
                 published = true;
-                WriteSidecar(finalPath, build.Sha256, warnings, log);
+                if (commit.Warnings != null)
+                {
+                    warnings.AddRange(commit.Warnings);
+                }
 
                 result.Success = true;
-                result.ArchivePath = finalPath;
+                result.ArchivePath = commit.Location;
                 result.Sha256 = build.Sha256;
                 result.Bytes = build.Bytes;
                 result.FileCount = build.FileCount;
@@ -183,7 +193,7 @@ namespace EmbyBackup.Core
                 }
 
                 progress(100, "Backup complete");
-                log("Backup complete: " + finalPath + " (" + build.Bytes + " bytes).");
+                log("Backup complete: " + commit.Location + " (" + build.Bytes + " bytes).");
             }
             catch (OperationCanceledException)
             {
@@ -197,27 +207,39 @@ namespace EmbyBackup.Core
             }
             finally
             {
-                if (!published && partialPath != null)
+                if (!published && stagingPath != null && destination != null)
                 {
-                    TryDeleteFile(partialPath, log);
+                    destination.Discard(stagingPath);
                 }
 
                 if (workDirectory != null)
                 {
                     TryDeleteDirectory(workDirectory, log);
                 }
+
+                if (destination != null)
+                {
+                    try
+                    {
+                        destination.Dispose();
+                    }
+                    catch
+                    {
+                        // Disposing a destination has no persistent state to flush.
+                    }
+                }
             }
 
             result.Duration = stopwatch.Elapsed;
             result.Warnings = warnings;
 
-            if (destination != null)
+            if (destinationLocation != null)
             {
                 var record = new BackupRecord
                 {
                     Id = Guid.NewGuid().ToString("N"),
                     FileName = published ? finalName : null,
-                    Destination = destination,
+                    Destination = destinationLocation,
                     CreatedUtc = BackupFormat.Utc(startedUtc),
                     Status = result.Success
                         ? "success"
@@ -249,9 +271,6 @@ namespace EmbyBackup.Core
             {
                 throw new InvalidOperationException("Emby's program data folder does not exist: " + request.ProgramDataPath);
             }
-
-            PathSafety.ValidateBackupDestination(request.ProgramDataPath, request.DestinationPath);
-            PathSafety.EnsureDestinationWritable(request.DestinationPath);
         }
 
         private static List<string> AdditionalExclusions(BackupRequest request)
@@ -371,41 +390,6 @@ namespace EmbyBackup.Core
             catch
             {
                 // UNC paths and some network shares do not support DriveInfo.
-            }
-        }
-
-        private static void WriteSidecar(string archivePath, string sha256, List<string> warnings, Action<string> log)
-        {
-            try
-            {
-                var sidecarPath = archivePath + BackupConstants.SidecarSuffix;
-                var temp = sidecarPath + ".tmp";
-                File.WriteAllText(temp, sha256 + "  " + Path.GetFileName(archivePath) + Environment.NewLine);
-                if (File.Exists(sidecarPath))
-                {
-                    File.Delete(sidecarPath);
-                }
-                File.Move(temp, sidecarPath);
-            }
-            catch (Exception ex)
-            {
-                warnings.Add("The archive was created but its .sha256 file could not be written: " + ex.Message);
-                log("Could not write the .sha256 file: " + ex);
-            }
-        }
-
-        private static void TryDeleteFile(string path, Action<string> log)
-        {
-            try
-            {
-                if (File.Exists(path))
-                {
-                    File.Delete(path);
-                }
-            }
-            catch (Exception ex)
-            {
-                log("Could not remove the unfinished archive " + path + ": " + ex.Message);
             }
         }
 
