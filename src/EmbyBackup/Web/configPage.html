@@ -1,0 +1,275 @@
+<div data-role="page" class="page type-interior pluginConfigurationPage embyBackupPage"
+     data-controller="__plugin/EmbyServerBackupJS">
+    <!--
+        Emby Backup settings page (embedded resource, see Plugin.GetPages).
+        The script is Web/configPage.js, loaded through data-controller "__plugin/EmbyServerBackupJS".
+        Property names below must match PluginConfiguration.cs and the keys used in configPage.js.
+    -->
+    <style>
+        .ebPage {
+            --eb-text: hsla(var(--theme-text-color-hue, 0), var(--theme-text-color-saturation, 0%), var(--theme-text-color-lightness, 100%), var(--theme-text-color-alpha, .87));
+            --eb-muted: hsla(var(--theme-text-color-hue, 0), var(--theme-text-color-saturation, 0%), var(--theme-text-color-lightness, 100%), var(--theme-secondary-text-color-alpha, .6));
+            --eb-accent: hsl(var(--theme-primary-color-hue, 116), var(--theme-primary-color-saturation, 41.7%), var(--theme-primary-color-lightness, 50.2%));
+            --eb-accent-text: var(--theme-accent-text-color, #52b54b);
+            --eb-card: hsla(var(--card-background-hue, 0), var(--card-background-saturation, 0%), var(--card-background-lightness, 24%), var(--card-background-alpha, .7));
+            --eb-line: var(--line-background, rgba(128, 128, 128, .25));
+            --eb-soft: color-mix(in srgb, var(--eb-text) 5%, transparent);
+            --eb-accent-soft: color-mix(in srgb, var(--eb-accent) 16%, transparent);
+            --eb-warn: #e09a2b;
+            --eb-bad: #e05a5a;
+            color: var(--eb-text);
+        }
+
+        .ebPage .ebWrap { max-width: 78em; display: flex; flex-direction: column; gap: 1.3em; }
+        .ebPage .ebHead { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 1em; }
+        .ebPage .ebHead h1 { margin: 0 0 .25em; font-size: 1.9em; font-weight: 600; }
+        .ebPage .ebHead p { margin: 0; color: var(--eb-muted); max-width: 48em; line-height: 1.55; }
+        .ebPage h2 { margin: 0; font-size: 1.15em; font-weight: 600; }
+        .ebPage .ebMuted { color: var(--eb-muted); }
+        .ebPage .ebSmall { font-size: .86em; }
+        .ebPage .ebCard { background: var(--eb-card); border: 1px solid var(--eb-line); border-radius: .85em; padding: 1.15em 1.25em; display: flex; flex-direction: column; gap: .9em; }
+        .ebPage .ebHeadRow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .8em; }
+
+        .ebPage .ebGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(15em, 1fr)); gap: .9em 1.1em; }
+        .ebPage .ebField { display: flex; flex-direction: column; gap: .4em; font-size: .9em; color: var(--eb-muted); min-width: 0; }
+        .ebPage .ebField.ebWide { grid-column: 1 / -1; }
+        .ebPage .ebField input, .ebPage .ebField select {
+            font: inherit; font-size: 1rem; color: var(--eb-text); background: var(--eb-soft); border: 1px solid var(--eb-line);
+            border-radius: .5em; padding: .55em .65em; min-height: 2.6em; box-sizing: border-box; width: 100%;
+        }
+        .ebPage .ebField input:focus, .ebPage .ebField select:focus { outline: 2px solid var(--eb-accent); outline-offset: 1px; }
+        .ebPage .ebField .ebHint { font-size: .82em; line-height: 1.45; }
+        .ebPage .ebChecks { display: flex; flex-direction: column; gap: .6em; }
+        .ebPage .ebCheck { display: flex; align-items: flex-start; gap: .6em; line-height: 1.45; cursor: pointer; }
+        .ebPage .ebCheck input { margin-top: .2em; width: 1.1em; height: 1.1em; accent-color: var(--eb-accent); flex: none; }
+
+        .ebPage .ebActions { display: flex; flex-wrap: wrap; align-items: center; gap: .6em; }
+        .ebPage .ebBtn {
+            font: inherit; font-size: .95em; min-height: 2.5em; padding: .35em 1em; border-radius: .5em; cursor: pointer;
+            color: var(--eb-text); background: var(--eb-soft); border: 1px solid var(--eb-line);
+        }
+        .ebPage .ebBtn:hover { border-color: var(--eb-muted); }
+        .ebPage .ebBtn:disabled { opacity: .45; cursor: default; }
+        .ebPage .ebBtn.ebPrimary { background: var(--eb-accent); border-color: var(--eb-accent); color: #fff; font-weight: 600; }
+        .ebPage .ebBtn.ebSmall { min-height: 1.9em; padding: .1em .65em; font-size: .82em; }
+        .ebPage .ebBtn.ebDanger { color: var(--eb-bad); }
+
+        .ebPage .ebState { display: inline-flex; align-items: center; gap: .5em; font-size: .9em; font-weight: 600; }
+        .ebPage .ebDot { width: .6em; height: .6em; border-radius: 50%; background: var(--eb-muted); flex: none; }
+        .ebPage .ebDot.ebRunning { background: var(--eb-accent); animation: ebPulse 1.2s ease-in-out infinite; }
+        .ebPage .ebDot.ebSuccess { background: var(--eb-accent); }
+        .ebPage .ebDot.ebFailed { background: var(--eb-bad); }
+        @keyframes ebPulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+        .ebPage .ebProgress { height: .45em; border-radius: .3em; background: var(--eb-line); overflow: hidden; }
+        .ebPage .ebProgress span { display: block; height: 100%; width: 0; background: var(--eb-accent); transition: width .25s; }
+        .ebPage .ebMeta { display: flex; flex-wrap: wrap; gap: .3em 1.5em; font-size: .85em; color: var(--eb-muted); }
+        .ebPage .ebMeta b { color: var(--eb-text); font-weight: 500; }
+        .ebPage .ebWarn { display: flex; flex-direction: column; gap: .25em; font-size: .85em; color: var(--eb-warn); }
+        .ebPage .ebError { color: var(--eb-bad); }
+        .ebPage .ebEmpty { padding: 1.3em; text-align: center; color: var(--eb-muted); background: var(--eb-soft); border-radius: .6em; }
+
+        .ebPage .ebTableWrap { overflow-x: auto; }
+        .ebPage table.ebTable { width: 100%; border-collapse: collapse; font-size: .88em; }
+        .ebPage table.ebTable th, .ebPage table.ebTable td { text-align: left; padding: .55em .6em; border-bottom: 1px solid var(--eb-line); vertical-align: middle; white-space: nowrap; }
+        .ebPage table.ebTable th { color: var(--eb-muted); font-weight: 600; font-size: .82em; text-transform: uppercase; letter-spacing: .04em; }
+        .ebPage table.ebTable tr:last-child td { border-bottom: 0; }
+        .ebPage table.ebTable td.ebName { max-width: 22em; overflow: hidden; text-overflow: ellipsis; }
+        .ebPage .ebStatus { font-weight: 600; }
+        .ebPage .ebStatus.ebSuccess { color: var(--eb-accent-text); }
+        .ebPage .ebStatus.ebFailed, .ebPage .ebStatus.ebCancelled { color: var(--eb-bad); }
+        .ebPage .ebBadge { display: inline-block; padding: .1em .5em; border-radius: 999px; background: var(--eb-soft); border: 1px solid var(--eb-line); font-size: .82em; }
+        .ebPage .ebBadge.ebOk { color: var(--eb-accent-text); border-color: var(--eb-accent); }
+
+        .ebPage .ebModal { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center; padding: 1em;
+            background: rgba(0, 0, 0, .55); }
+        .ebPage .ebModal[hidden] { display: none; }
+        .ebPage .ebModalBox { background: #202020; color: #fff; border: 1px solid rgba(255, 255, 255, .2); border-radius: .8em; max-width: 46em;
+            width: 100%; max-height: 84vh; overflow: auto; padding: 1.2em 1.3em; display: flex; flex-direction: column; gap: .8em; }
+        .ebPage .ebModalBox h3 { margin: 0; font-size: 1.1em; }
+        .ebPage .ebModalBody { font-size: .9em; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+        .ebPage .ebModalBox .ebActions { justify-content: flex-end; }
+
+        .ebPage .ebInputRow { display: flex; gap: .5em; align-items: stretch; }
+        .ebPage .ebInputRow input { flex: 1 1 auto; min-width: 0; }
+        .ebPage .ebIconBtn { display: inline-flex; align-items: center; justify-content: center; padding: 0 .75em; }
+        .ebPage .ebIconBtn svg, .ebPage .ebFolderRow svg { width: 1.35em; height: 1.35em; fill: currentColor; flex: 0 0 auto; }
+        .ebPage .ebBrowseBox { max-width: 42em; }
+        .ebPage .ebBrowseBox:focus { outline: none; }
+        .ebPage .ebBrowseBar { display: flex; gap: .6em; align-items: center; }
+        .ebPage .ebBrowsePath { flex: 1 1 auto; min-width: 0; padding: .35em .6em; border-radius: .4em;
+            background: var(--eb-soft); font-size: .9em; overflow-wrap: anywhere; }
+        .ebPage .ebBrowseError:not([hidden]) { display: block; }
+        .ebPage .ebFolderList { min-height: 12em; max-height: 46vh; overflow: auto;
+            border: 1px solid var(--eb-line); border-radius: .5em; }
+        .ebPage .ebFolderRow { display: flex; align-items: center; gap: .6em; width: 100%; padding: .5em .7em;
+            background: transparent; border: 0; border-bottom: 1px solid var(--eb-line); border-radius: 0;
+            color: inherit; font: inherit; text-align: left; cursor: pointer; }
+        .ebPage .ebFolderRow:last-child { border-bottom: 0; }
+        .ebPage .ebFolderRow:hover, .ebPage .ebFolderRow:focus-visible { background: var(--eb-soft); outline: none; }
+        .ebPage .ebFolderRow:hover { color: var(--eb-accent-text); }
+        .ebPage .ebFolderUp { color: var(--eb-muted); font-weight: 600; }
+        .ebPage .ebFolderEmpty { padding: 1.4em; text-align: center; color: var(--eb-muted); }
+    </style>
+
+    <div data-role="content">
+        <div class="ebPage">
+            <div class="ebWrap">
+                <div class="ebHead">
+                    <div>
+                        <h1>Emby Backup</h1>
+                        <p>Full backups of Emby's server data and databases. Movie metadata, artwork, NFO files, cache,
+                           logs, transcodes and media folders are never included.</p>
+                    </div>
+                    <span class="ebMuted ebSmall" id="ebPluginVersion"></span>
+                </div>
+
+                <form class="ebCard" id="ebSettingsForm">
+                    <h2>Settings</h2>
+                    <div class="ebGrid">
+                        <label class="ebField ebWide">Backup destination
+                            <span class="ebInputRow">
+                                <input id="ebDestination" type="text" autocomplete="off" spellcheck="false"
+                                       placeholder="Absolute path, mounted folder or UNC share (not inside Emby's data folder)">
+                                <button class="ebBtn ebIconBtn" type="button" id="ebBrowse"
+                                        title="Browse folders on the server" aria-label="Browse folders on the server">
+                                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                        <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"></path>
+                                    </svg>
+                                </button>
+                            </span>
+                            <span class="ebHint">Examples: /mnt/backups/emby, D:\Backups\Emby, \\nas\backups\emby.
+                                The folder must be outside Emby's program data folder.</span>
+                        </label>
+                        <label class="ebField">Backups to keep
+                            <input id="ebRetention" type="number" min="1" max="365" step="1" value="7">
+                            <span class="ebHint">Only archives created by this plugin are removed.</span>
+                        </label>
+                        <label class="ebField">Compression
+                            <select id="ebCompression">
+                                <option value="Optimal">Optimal (recommended)</option>
+                                <option value="Fastest">Fastest</option>
+                                <option value="NoCompression">No compression</option>
+                            </select>
+                        </label>
+                        <label class="ebField">Database busy timeout (seconds)
+                            <input id="ebBusySeconds" type="number" min="5" max="600" step="5" value="60">
+                            <span class="ebHint">How long to wait for a database lock held by Emby.</span>
+                        </label>
+                    </div>
+
+                    <div class="ebChecks">
+                        <label class="ebCheck"><input id="ebScheduled" type="checkbox" checked>
+                            <span>Run a backup automatically every day at 03:00</span></label>
+                        <label class="ebCheck"><input id="ebVerify" type="checkbox" checked>
+                            <span>Verify the archive after creating it (reads it back and compares every SHA-256)</span></label>
+                    </div>
+
+                    <div class="ebActions">
+                        <button class="ebBtn ebPrimary" type="submit">Save settings</button>
+                        <span class="ebMuted ebSmall" id="ebDirty"></span>
+                    </div>
+                </form>
+
+                <section class="ebCard">
+                    <div class="ebHeadRow">
+                        <h2>Status</h2>
+                        <span class="ebState"><span class="ebDot" id="ebStateDot"></span><span id="ebState">Loading...</span></span>
+                    </div>
+                    <div class="ebProgress" aria-hidden="true"><span id="ebBar"></span></div>
+                    <div id="ebMessage" class="ebMuted">Reading the current state...</div>
+                    <div class="ebMeta">
+                        <span>Started: <b id="ebStarted">&mdash;</b></span>
+                        <span>Finished: <b id="ebFinished">&mdash;</b></span>
+                        <span>Last backup: <b id="ebLastBackup">&mdash;</b></span>
+                    </div>
+                    <div class="ebWarn" id="ebWarnings"></div>
+                    <div class="ebActions">
+                        <button class="ebBtn ebPrimary" type="button" id="ebRun">Run backup now</button>
+                        <button class="ebBtn" type="button" id="ebCancel" disabled>Cancel running backup</button>
+                        <span class="ebMuted ebSmall" id="ebRunHint">The settings are saved automatically before a manual run.</span>
+                    </div>
+                </section>
+
+                <section class="ebCard">
+                    <div class="ebHeadRow">
+                        <h2>Recent backup history</h2>
+                        <span class="ebMuted ebSmall">Kept in the plugin data folder; the archives themselves are in the destination.</span>
+                    </div>
+                    <div class="ebTableWrap" id="ebHistoryWrap">
+                        <table class="ebTable">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Archive</th>
+                                    <th>Size</th>
+                                    <th>Contents</th>
+                                    <th>Status</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody id="ebHistory"></tbody>
+                        </table>
+                    </div>
+                    <div class="ebEmpty" id="ebHistoryEmpty">No backups have been recorded yet.</div>
+                </section>
+
+                <section class="ebCard">
+                    <div class="ebHeadRow">
+                        <h2>Archives in the destination</h2>
+                        <button class="ebBtn ebSmall" type="button" id="ebRefresh">Refresh</button>
+                    </div>
+                    <div class="ebMuted ebSmall" id="ebFilesNote"></div>
+                    <div class="ebTableWrap" id="ebFilesWrap">
+                        <table class="ebTable">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Archive</th>
+                                    <th>Size</th>
+                                    <th>Contents</th>
+                                    <th>Manifest</th>
+                                    <th>Checksum</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody id="ebFiles"></tbody>
+                        </table>
+                    </div>
+                    <div class="ebEmpty" id="ebFilesEmpty" hidden>No archives were found in the destination.</div>
+                </section>
+
+                <p class="ebMuted ebSmall">
+                    To restore: stop Emby, extract the ZIP directly into Emby's program data folder, then start Emby.
+                    The archive has no extra root folder. Use <b>Verify</b> before restoring.
+                </p>
+            </div>
+
+            <div class="ebModal" id="ebBrowseModal" hidden>
+                <div class="ebModalBox ebBrowseBox" role="dialog" aria-modal="true" aria-labelledby="ebBrowseTitle" tabindex="-1">
+                    <h3 id="ebBrowseTitle">Choose a backup folder</h3>
+                    <div class="ebBrowseBar">
+                        <button class="ebBtn ebSmall" type="button" id="ebBrowseUp">Up</button>
+                        <code class="ebBrowsePath" id="ebBrowsePath"></code>
+                    </div>
+                    <div class="ebBrowseError ebError ebSmall" id="ebBrowseError" hidden></div>
+                    <div class="ebFolderList" id="ebBrowseList"></div>
+                    <div class="ebActions">
+                        <button class="ebBtn" type="button" id="ebBrowseClose">Cancel</button>
+                        <button class="ebBtn ebPrimary" type="button" id="ebBrowseUse">Use this folder</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="ebModal" id="ebModal" hidden>
+                <div class="ebModalBox" role="dialog" aria-modal="true" aria-labelledby="ebModalTitle">
+                    <h3 id="ebModalTitle"></h3>
+                    <div class="ebModalBody" id="ebModalBody"></div>
+                    <div class="ebActions">
+                        <button class="ebBtn ebPrimary" type="button" id="ebModalClose">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

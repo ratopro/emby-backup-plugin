@@ -1,0 +1,29 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build plugin
+        run: dotnet build -c Release src/EmbyBackup/EmbyBackup.csproj
+
+      - name: Run engine tests
+        run: dotnet run -c Release --project tests/EmbyBackup.Tests
+
+      - name: Upload plugin DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: EmbyBackup-dll
+          path: src/EmbyBackup/bin/Release/netstandard2.0/EmbyBackup.dll

@@ -1,0 +1,20 @@
+# Build output
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# Test and packaging artifacts
+artifacts/
+*.zip
+*.sha256
+!tests/**/fixtures/*.zip
+
+# Local tooling state
+.unifymemfile/
+*.log
+
+# OS noise
+.DS_Store
+Thumbs.db
