@@ -132,6 +132,22 @@ namespace EmbyBackup.Tests
                         "the refusal explains the destination rule");
                     Check(!Directory.Exists(inside), "the refused destination is not created");
 
+                    var readOnly = Path.Combine(root, "readonly-destination");
+                    Directory.CreateDirectory(readOnly);
+                    if (!OperatingSystem.IsWindows() && Environment.UserName != "root")
+                    {
+                        File.SetUnixFileMode(readOnly, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+                        var denied = RunBackup(source, pluginData, readOnly, 2, CancellationToken.None);
+                        File.SetUnixFileMode(readOnly,
+                            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                        Check(!denied.Success, "a read-only destination fails");
+                        Check(denied.Error != null
+                            && denied.Error.Contains("write access", StringComparison.OrdinalIgnoreCase),
+                            "the read-only failure explains how to fix permissions");
+                        Check(!Directory.EnumerateFiles(readOnly).Any(), "the write probe leaves nothing behind");
+                        Check(RealArchives(readOnly).Count == 0, "a failed destination keeps no archive");
+                    }
+
                     CheckThrows(() => PathSafety.ToArchivePath("../evil"),
                         "archive paths with .. are rejected");
                     CheckThrows(() => PathSafety.ToArchivePath("a/../../b"),

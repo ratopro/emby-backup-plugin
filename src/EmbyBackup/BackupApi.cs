@@ -252,7 +252,7 @@ namespace EmbyBackup
                 DestinationPath = plugin == null ? string.Empty : plugin.Configuration.DestinationPath,
                 ScheduledBackupsEnabled = plugin != null && plugin.Configuration.ScheduledBackupsEnabled,
                 PluginVersion = typeof(Plugin).Assembly.GetName().Version == null
-                    ? "1.1.0"
+                    ? "1.1.1"
                     : typeof(Plugin).Assembly.GetName().Version.ToString(),
             };
         }

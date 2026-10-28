@@ -251,6 +251,7 @@ namespace EmbyBackup.Core
             }
 
             PathSafety.ValidateBackupDestination(request.ProgramDataPath, request.DestinationPath);
+            PathSafety.EnsureDestinationWritable(request.DestinationPath);
         }
 
         private static List<string> AdditionalExclusions(BackupRequest request)

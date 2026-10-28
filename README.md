@@ -13,6 +13,8 @@ La versión lista para instalar está en [Releases](https://github.com/ratopro/e
 
 ## Versiones
 
+- **1.1.1**: comprueba la escritura del destino antes de empezar y explica cómo dar permisos a la cuenta
+  de Emby cuando la carpeta no es accesible.
 - **1.1.0**: explorador de carpetas del servidor junto a *Backup destination*; `Esc` cierra los
   diálogos sin salir de la página.
 - **1.0.0**: primera versión con copias consistentes de SQLite, manifiesto, verificación y retención.
@@ -97,6 +99,44 @@ El explorador ve exactamente lo que ve Emby, que es lo que importa para que la c
   (`\\nas\share`) siempre que el servidor tenga acceso.
 - Solo se pueden elegir carpetas existentes y legibles por el proceso de Emby. Para crear una carpeta
   nueva, créala antes en el sistema (o escribe la ruta a mano) y vuelve a explorar.
+
+### Permisos del destino en Linux
+
+Emby corre como servicio con su propia cuenta (`emby`, `embyServer`, el usuario del contenedor…), no con
+tu cuenta de escritorio. Una carpeta dentro de `/home/tu-usuario` suele ser privada (`0700`/`0750`), así
+que el proceso no puede entrar y la copia falla con `Access to the path '...zip.partial' is denied`.
+
+Primero averigua la cuenta que ejecuta Emby:
+
+```bash
+ps -o user= -C EmbyServer        # servidor nativo
+systemctl show emby -p User      # si usas la unidad systemd emby.service
+```
+
+Opción recomendada, una carpeta dedicada:
+
+```bash
+sudo mkdir -p /srv/emby-backup
+sudo chown emby:emby /srv/emby-backup
+sudo chmod 750 /srv/emby-backup
+```
+
+y usa `/srv/emby-backup` como destino.
+
+Si prefieres conservar tu carpeta actual, da acceso solo a esa cuenta con ACL (paquete `acl`). Hay que
+conceder `x` en todos los directorios padre y `rwx` en el destino:
+
+```bash
+sudo setfacl -m u:emby:x  /home/usuario
+sudo setfacl -m u:emby:x  /home/usuario/Documentos
+sudo setfacl -m u:emby:rwx /home/usuario/Documentos/Backup
+```
+
+Evita `chmod 777`: las ACL permiten dar acceso únicamente a Emby. En Docker, el destino debe ser un
+volumen montado y la ruta que se escribe es la del contenedor, no la del host.
+
+Desde 1.1.1 el plugin crea un fichero de prueba antes de empezar; si no puede, falla de inmediato con
+la ruta, la cuenta que ejecuta Emby y una sugerencia concreta.
 
 ### Copia manual
 

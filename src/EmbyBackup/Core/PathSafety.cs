@@ -151,6 +151,56 @@ namespace EmbyBackup.Core
             Directory.CreateDirectory(destination);
         }
 
+        /// <summary>
+        /// Fails early, with an actionable message, when the Emby process cannot write to the destination.
+        /// Emby usually runs as a service account (emby, docker, a NAS user...) that has no access to a
+        /// personal home folder, so the raw "access to the path is denied" only shows up later, mid-backup.
+        /// </summary>
+        public static void EnsureDestinationWritable(string destinationPath)
+        {
+            var destination = Path.GetFullPath(destinationPath);
+
+            try
+            {
+                Directory.CreateDirectory(destination);
+
+                var probe = Path.Combine(destination, ".embybackup-write-" + Guid.NewGuid().ToString("N") + ".tmp");
+                try
+                {
+                    using (var stream = new FileStream(probe, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    {
+                        stream.WriteByte(0);
+                    }
+                }
+                finally
+                {
+                    try
+                    {
+                        if (File.Exists(probe))
+                        {
+                            File.Delete(probe);
+                        }
+                    }
+                    catch
+                    {
+                        // The probe is harmless: it is ignored by the retention and listed as foreign.
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException || ex is IOException)
+            {
+                var user = Environment.UserName;
+                var message = "Emby cannot write to the backup destination '" + destination + "': " + ex.Message
+                    + " The Emby process runs as '" + user + "', and that account needs write access to this folder. "
+                    + "Grant it explicitly (for example: sudo setfacl -m u:" + user + ":rwx '" + destination + "'"
+                    + " and sudo setfacl -m u:" + user + ":x on every parent folder),"
+                    + " or use a folder owned by that account"
+                    + " (sudo mkdir -p /srv/emby-backup && sudo chown " + user + ":" + user + " /srv/emby-backup).";
+
+                throw new InvalidOperationException(message, ex);
+            }
+        }
+
         private static string TrimEnd(string path)
         {
             if (path.Length <= 1)
