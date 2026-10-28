@@ -8,7 +8,7 @@ Pensado para Emby Server **4.9 o superior** (probado con 4.9.1.90) en Linux, Doc
 
 ## Descarga
 
-La versión lista para instalar está en [Releases](../../releases/latest): descarga el ZIP, extrae
+La versión lista para instalar está en [Releases](https://github.com/ratopro/emby-backup-plugin/releases/latest): descarga el ZIP, extrae
 `EmbyBackup.dll` y cópialo en la carpeta de plugins (ver [Instalación](#instalación)).
 
 ## Versiones
