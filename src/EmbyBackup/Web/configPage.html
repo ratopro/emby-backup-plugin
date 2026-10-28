@@ -72,6 +72,9 @@
         .ebPage .ebWarn { display: flex; flex-direction: column; gap: .25em; font-size: .85em; color: var(--eb-warn); }
         .ebPage .ebError { color: var(--eb-bad); }
         .ebPage .ebEmpty { padding: 1.3em; text-align: center; color: var(--eb-muted); background: var(--eb-soft); border-radius: .6em; }
+        .ebPage .ebFooter { margin: .2em 0 1.2em; text-align: center; color: var(--eb-muted); font-size: .82em; }
+        .ebPage .ebFooter a { color: var(--eb-accent-text); text-decoration: none; }
+        .ebPage .ebFooter a:hover { text-decoration: underline; }
 
         .ebPage .ebTableWrap { overflow-x: auto; }
         .ebPage table.ebTable { width: 100%; border-collapse: collapse; font-size: .88em; }
@@ -403,6 +406,11 @@
                     extract the ZIP directly into the program data folder (it has no extra root folder), and start
                     Emby. Use <b>Verify</b> before restoring.
                 </p>
+
+                <footer class="ebFooter">
+                    &copy; Ratopro &middot; <span id="ebFooterVersion">Emby Backup</span> &middot;
+                    <a href="https://github.com/ratopro/emby-backup-plugin" target="_blank" rel="noopener noreferrer">GitHub</a>
+                </footer>
             </div>
 
             <div class="ebModal" id="ebBrowseModal" hidden>

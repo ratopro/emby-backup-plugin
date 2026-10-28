@@ -271,6 +271,7 @@ define(['baseView', 'loading'], function (BaseView, loading) {
                 : 'The settings are saved automatically before a manual run.');
         if (status.PluginVersion) {
             q(view, 'ebPluginVersion').textContent = 'Plugin ' + status.PluginVersion;
+            q(view, 'ebFooterVersion').textContent = 'Emby Backup ' + status.PluginVersion;
         }
 
         renderRestore(view, restore);
