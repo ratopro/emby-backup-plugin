@@ -237,9 +237,7 @@ namespace EmbyBackup.Core
         public bool IsOwned(BackupDestinationFile file)
         {
             var path = Path.Combine(_root, file.Name);
-            var manifest = BackupCatalog.ReadManifest(path, out _);
-            return manifest != null
-                && string.Equals(manifest.Format, BackupConstants.FormatName, StringComparison.Ordinal);
+            return BackupCatalog.IsOwnedArchive(path);
         }
 
         public void Delete(string fileName, Action<string> log)

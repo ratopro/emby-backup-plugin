@@ -133,9 +133,108 @@ namespace EmbyBackup.Core
             };
         }
 
-        public string QuickCheck(string path)
+        /// <summary>
+        /// Replaces a live SQLite database with the contents of a snapshot using SQLite's online backup API.
+        /// It is safe while Emby has the destination database open: SQLite coordinates readers and writers,
+        /// and the existing WAL is left in place. Returned value is the destination's PRAGMA quick_check.
+        /// </summary>
+        public string Restore(string sourcePath, string destinationPath, CancellationToken cancellationToken)
         {
-            IntPtr db = IntPtr.Zero;
+            if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+            {
+                throw new FileNotFoundException("The database to restore does not exist.", sourcePath);
+            }
+
+            if (string.IsNullOrWhiteSpace(destinationPath))
+            {
+                throw new ArgumentException("A destination database path is required.", nameof(destinationPath));
+            }
+
+            var destinationDirectory = Path.GetDirectoryName(destinationPath);
+            if (!string.IsNullOrEmpty(destinationDirectory))
+            {
+                Directory.CreateDirectory(destinationDirectory);
+            }
+
+            IntPtr source = IntPtr.Zero;
+            IntPtr destination = IntPtr.Zero;
+            IntPtr backup = IntPtr.Zero;
+
+            try
+            {
+                source = OpenSource(sourcePath);
+                SqliteNative.BusyTimeout(source, _busyTimeoutMilliseconds);
+
+                destination = SqliteNative.Open(
+                    destinationPath,
+                    SqliteNative.ReadWrite | SqliteNative.Create,
+                    _busyTimeoutMilliseconds);
+
+                backup = SqliteNative.BackupInit(destination, "main", source, "main");
+                if (backup == IntPtr.Zero)
+                {
+                    throw new InvalidOperationException(
+                        "SQLite could not start the restore into " + destinationPath + ": "
+                        + SqliteNative.Error(destination));
+                }
+
+                var watch = Stopwatch.StartNew();
+                while (true)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var rc = SqliteNative.BackupStep(backup, 256);
+                    if (rc == SqliteNative.Done)
+                    {
+                        break;
+                    }
+
+                    if (rc == SqliteNative.Ok)
+                    {
+                        continue;
+                    }
+
+                    if (rc == SqliteNative.Busy || rc == SqliteNative.Locked)
+                    {
+                        if (watch.ElapsedMilliseconds >= _busyTimeoutMilliseconds)
+                        {
+                            throw new InvalidOperationException(
+                                "The database " + destinationPath + " stayed locked for "
+                                + (_busyTimeoutMilliseconds / 1000)
+                                + " seconds. Stop Emby and try the restore again.");
+                        }
+
+                        Thread.Sleep(100);
+                        continue;
+                    }
+
+                    throw new InvalidOperationException(
+                        "SQLite restore failed (" + rc + "): " + SqliteNative.Error(destination));
+                }
+            }
+            finally
+            {
+                if (backup != IntPtr.Zero)
+                {
+                    SqliteNative.BackupFinish(backup);
+                }
+
+                if (destination != IntPtr.Zero)
+                {
+                    SqliteNative.Close(destination);
+                }
+
+                if (source != IntPtr.Zero)
+                {
+                    SqliteNative.Close(source);
+                }
+            }
+
+            _log("SQLite database restored: " + sourcePath + " -> " + destinationPath);
+            return QuickCheck(destinationPath);
+        }
+
+        public string QuickCheck(string path)
+        {            IntPtr db = IntPtr.Zero;
             IntPtr statement = IntPtr.Zero;
             try
             {

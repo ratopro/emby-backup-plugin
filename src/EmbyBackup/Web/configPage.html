@@ -84,6 +84,7 @@
         .ebPage .ebStatus.ebFailed, .ebPage .ebStatus.ebCancelled { color: var(--eb-bad); }
         .ebPage .ebBadge { display: inline-block; padding: .1em .5em; border-radius: 999px; background: var(--eb-soft); border: 1px solid var(--eb-line); font-size: .82em; }
         .ebPage .ebBadge.ebOk { color: var(--eb-accent-text); border-color: var(--eb-accent); }
+        .ebPage .ebBadge.ebWarn { color: var(--eb-warn); border-color: var(--eb-warn); }
 
         .ebPage .ebModal { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center; padding: 1em;
             background: rgba(0, 0, 0, .55); }
@@ -234,6 +235,18 @@
                         </label>
                     </div>
 
+                    <div class="ebDestGroup">
+                        <label class="ebCheck"><input id="ebProtect" type="checkbox">
+                            <span>Protect new backups with a password (AES-256)</span></label>
+                        <label class="ebField">Backup password
+                            <input id="ebBackupPassword" type="password" autocomplete="new-password" disabled>
+                            <span class="ebHint">Applied to new manual and automatic backups. Existing archives keep
+                                the password they were created with. The password is saved in
+                                <code>plugins/configurations/EmbyBackup.xml</code> as plain text; without it a
+                                protected archive cannot be restored.</span>
+                        </label>
+                    </div>
+
                     <div class="ebGrid">
                         <label class="ebField">Automatic backups
                             <select id="ebSchedulePeriod">
@@ -269,8 +282,9 @@
                     </div>
 
                     <span class="ebMuted ebSmall" id="ebCredentialNote" hidden>
-                        Network and FTP passwords are saved in <code>plugins/configurations/EmbyBackup.xml</code> as plain text.
-                        Use a dedicated account with access only to the backup destination.
+                        Network and FTP passwords, and the optional backup password, are saved in
+                        <code>plugins/configurations/EmbyBackup.xml</code> as plain text. Use a dedicated account
+                        with access only to the backup destination.
                     </span>
 
                     <div class="ebActions">
@@ -315,6 +329,7 @@
                                     <th>Size</th>
                                     <th>Contents</th>
                                     <th>Status</th>
+                                    <th>Protection</th>
                                     <th>Started by</th>
                                     <th></th>
                                 </tr>
@@ -340,6 +355,7 @@
                                     <th>Size</th>
                                     <th>Contents</th>
                                     <th>Manifest</th>
+                                    <th>Protection</th>
                                     <th>Checksum</th>
                                     <th></th>
                                 </tr>
@@ -350,9 +366,42 @@
                     <div class="ebEmpty" id="ebFilesEmpty" hidden>No archives were found in the destination.</div>
                 </section>
 
+                <section class="ebCard" id="ebRestoreCard">
+                    <div class="ebHeadRow">
+                        <h2>Restore from a backup</h2>
+                        <span class="ebMuted ebSmall">Reads the archive from the destination configured above.</span>
+                    </div>
+                    <div class="ebGrid">
+                        <label class="ebField ebWide">Backup archive
+                            <select id="ebRestoreFile" disabled>
+                                <option value="">Loading the archives...</option>
+                            </select>
+                            <span class="ebHint">Save the settings first if you changed the destination. The list is
+                                refreshed with the archives in that folder.</span>
+                        </label>
+                        <label class="ebField ebWide" id="ebRestorePasswordField" hidden>Password
+                            <input id="ebRestorePassword" type="password" autocomplete="current-password">
+                            <span class="ebHint">This archive is protected. Enter the password that was set when it
+                                was created; it is not stored in the archive.</span>
+                        </label>
+                    </div>
+                    <div class="ebWarn" id="ebRestoreWarnings"></div>
+                    <div class="ebActions">
+                        <button class="ebBtn ebPrimary" type="button" id="ebRestoreStart" disabled>Restore selected backup...</button>
+                        <button class="ebBtn ebPrimary" type="button" id="ebRestartEmby" hidden>Restart Emby now</button>
+                        <span class="ebMuted ebSmall" id="ebRestoreNote">You will be asked to confirm twice. Emby keeps
+                            the current plugin settings and does not delete files created after the backup.</span>
+                    </div>
+                    <div class="ebProgress" id="ebRestoreProgressWrap" hidden aria-hidden="true"><span id="ebRestoreBar"></span></div>
+                    <div id="ebRestoreMessage" class="ebMuted ebSmall" hidden></div>
+                </section>
+
                 <p class="ebMuted ebSmall">
-                    To restore: stop Emby, extract the ZIP directly into Emby's program data folder, then start Emby.
-                    The archive has no extra root folder. Use <b>Verify</b> before restoring.
+                    A restore replaces Emby's server configuration and databases with the contents of the archive
+                    while Emby keeps running, then asks you to restart Emby. Files created after the backup are
+                    not deleted, and the current destination and credentials are kept. You can also stop Emby,
+                    extract the ZIP directly into the program data folder (it has no extra root folder), and start
+                    Emby. Use <b>Verify</b> before restoring.
                 </p>
             </div>
 
@@ -378,6 +427,32 @@
                     <div class="ebModalBody" id="ebModalBody"></div>
                     <div class="ebActions">
                         <button class="ebBtn ebPrimary" type="button" id="ebModalClose">Close</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="ebModal" id="ebConfirmModal" hidden>
+                <div class="ebModalBox" role="dialog" aria-modal="true" aria-labelledby="ebConfirmTitle">
+                    <h3 id="ebConfirmTitle"></h3>
+                    <div class="ebModalBody" id="ebConfirmBody"></div>
+                    <div class="ebActions">
+                        <button class="ebBtn" type="button" id="ebConfirmCancel">Cancel</button>
+                        <button class="ebBtn ebPrimary" type="button" id="ebConfirmOk">Continue</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="ebModal" id="ebPasswordModal" hidden>
+                <div class="ebModalBox" role="dialog" aria-modal="true" aria-labelledby="ebPasswordTitle">
+                    <h3 id="ebPasswordTitle">Password required</h3>
+                    <div class="ebModalBody" id="ebPasswordBody"></div>
+                    <label class="ebField">Password
+                        <input id="ebPasswordInput" type="password" autocomplete="current-password">
+                    </label>
+                    <div class="ebError ebSmall" id="ebPasswordError" hidden></div>
+                    <div class="ebActions">
+                        <button class="ebBtn" type="button" id="ebPasswordCancel">Cancel</button>
+                        <button class="ebBtn ebPrimary" type="button" id="ebPasswordOk">Continue</button>
                     </div>
                 </div>
             </div>

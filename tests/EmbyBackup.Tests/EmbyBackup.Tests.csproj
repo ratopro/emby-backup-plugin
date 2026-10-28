@@ -24,7 +24,10 @@
     <Compile Include="../../src/EmbyBackup/Core/PathSafety.cs" Link="Core/PathSafety.cs" />
     <Compile Include="../../src/EmbyBackup/Core/NetworkShareConnector.cs" Link="Core/NetworkShareConnector.cs" />
     <Compile Include="../../src/EmbyBackup/Core/RetentionService.cs" Link="Core/RetentionService.cs" />
+    <Compile Include="../../src/EmbyBackup/Core/RestoreService.cs" Link="Core/RestoreService.cs" />
     <Compile Include="../../src/EmbyBackup/Core/SqliteSnapshotService.cs" Link="Core/SqliteSnapshotService.cs" />
+    <Compile Include="../../src/EmbyBackup/Core/ZipEncryption.cs" Link="Core/ZipEncryption.cs" />
+    <Compile Include="../../src/EmbyBackup/Core/ZipReader.cs" Link="Core/ZipReader.cs" />
   </ItemGroup>
 
 </Project>

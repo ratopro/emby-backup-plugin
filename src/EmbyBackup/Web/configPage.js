@@ -118,13 +118,25 @@ define(['baseView', 'loading'], function (BaseView, loading) {
             q(view, 'ebScheduleTime').value = config.ScheduleTime || '03:00';
             q(view, 'ebScheduled').checked = config.ScheduledBackupsEnabled !== false;
             q(view, 'ebVerify').checked = config.VerifyAfterCreate !== false;
+            q(view, 'ebProtect').checked = !!config.ProtectBackupsWithPassword;
+            q(view, 'ebBackupPassword').value = config.BackupPassword || '';
             updateDestinationFields(view);
             updateScheduleFields(view);
+            updateProtectionFields(view);
             setDirty(view, false);
         });
     }
 
     function saveSettings(view) {
+        var protect = q(view, 'ebProtect').checked;
+        var password = q(view, 'ebBackupPassword').value;
+        if (protect && !password) {
+            showModal(view, 'Backup password required',
+                'Password protection is enabled, but the backup password is empty.\n\n'
+                + 'Enter a password or turn password protection off before saving.');
+            return Promise.reject({ ebHandled: true });
+        }
+
         return ApiClient.getPluginConfiguration(pluginId).then(function (config) {
             config.DestinationType = q(view, 'ebDestinationType').value;
             config.DestinationPath = q(view, 'ebDestination').value.trim();
@@ -148,12 +160,26 @@ define(['baseView', 'loading'], function (BaseView, loading) {
             config.ScheduleTime = q(view, 'ebScheduleTime').value || '03:00';
             config.ScheduledBackupsEnabled = q(view, 'ebScheduled').checked;
             config.VerifyAfterCreate = q(view, 'ebVerify').checked;
+            config.ProtectBackupsWithPassword = protect;
+            config.BackupPassword = protect ? password : '';
+            if (!protect) {
+                q(view, 'ebBackupPassword').value = '';
+            }
 
             return ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
                 setDirty(view, false);
                 return result;
             });
         });
+    }
+
+    function updateProtectionFields(view) {
+        var enabled = q(view, 'ebProtect').checked;
+        var input = q(view, 'ebBackupPassword');
+        input.disabled = !enabled;
+        if (!enabled) {
+            input.value = '';
+        }
     }
 
     function updateDestinationFields(view) {
@@ -234,14 +260,27 @@ define(['baseView', 'loading'], function (BaseView, loading) {
             warnings.appendChild(el('div', 'ebWarn', text));
         });
 
-        q(view, 'ebRun').disabled = !!status.Running;
+        var restore = status.Restore;
+        var restoreRunning = !!(restore && restore.Running);
+        q(view, 'ebRun').disabled = !!status.Running || restoreRunning;
         q(view, 'ebCancel').disabled = !status.Running;
-        q(view, 'ebRunHint').textContent = status.Running
-            ? 'A backup is running. You can keep this page open or close it; the server continues.'
-            : 'The settings are saved automatically before a manual run.';
+        q(view, 'ebRunHint').textContent = restoreRunning
+            ? 'A restore is running. Wait for it to finish before starting a backup.'
+            : (status.Running
+                ? 'A backup is running. You can keep this page open or close it; the server continues.'
+                : 'The settings are saved automatically before a manual run.');
         if (status.PluginVersion) {
             q(view, 'ebPluginVersion').textContent = 'Plugin ' + status.PluginVersion;
         }
+
+        renderRestore(view, restore);
+    }
+
+    function protectionBadge(encrypted, known) {
+        if (known === false) {
+            return el('span', 'ebBadge', 'Unknown');
+        }
+        return el('span', 'ebBadge' + (encrypted ? ' ebWarn' : ''), encrypted ? 'Password' : 'None');
     }
 
     function statusRow(badge, ok) {
@@ -276,6 +315,10 @@ define(['baseView', 'loading'], function (BaseView, loading) {
             }
             row.appendChild(statusCell);
 
+            var protection = el('td');
+            protection.appendChild(protectionBadge(!!record.Encrypted, true));
+            row.appendChild(protection);
+
             row.appendChild(el('td', null, record.Origin === 'scheduled' ? 'Automatic' : 'Manual'));
 
             var actions = el('td');
@@ -296,6 +339,7 @@ define(['baseView', 'loading'], function (BaseView, loading) {
         var body = q(view, 'ebFiles');
         body.textContent = '';
         var files = result.Files || [];
+        view.__ebFiles = files;
         var note = q(view, 'ebFilesNote');
         note.textContent = result.Error
             ? result.Error
@@ -326,6 +370,11 @@ define(['baseView', 'loading'], function (BaseView, loading) {
                 manifest.appendChild(el('div', 'ebError ebSmall', file.Error));
             }
             row.appendChild(manifest);
+
+            var protection = el('td');
+            protection.appendChild(protectionBadge(!!file.Encrypted, file.EncryptedKnown));
+            row.appendChild(protection);
+
             row.appendChild(el('td', null, file.HasChecksumFile ? 'Present' : 'Missing'));
 
             var actions = el('td');
@@ -335,14 +384,81 @@ define(['baseView', 'loading'], function (BaseView, loading) {
                 verifyFile(view, file.FileName);
             });
             actions.appendChild(verify);
+
+            var restore = el('button', 'ebBtn ebSmall', 'Restore');
+            restore.type = 'button';
+            restore.addEventListener('click', function () {
+                var select = q(view, 'ebRestoreFile');
+                select.value = file.FileName;
+                updateRestorePasswordVisibility(view);
+                startRestoreFlow(view, file.FileName);
+            });
+            actions.appendChild(document.createTextNode(' '));
+            actions.appendChild(restore);
+
             row.appendChild(actions);
             body.appendChild(row);
         });
+
+        fillRestoreFiles(view, files);
+    }
+
+    function fillRestoreFiles(view, files) {
+        var select = q(view, 'ebRestoreFile');
+        var previous = select.value;
+        select.textContent = '';
+
+        if (!files.length) {
+            var empty = el('option', null, 'No archives found in the destination');
+            empty.value = '';
+            select.appendChild(empty);
+            select.disabled = true;
+            q(view, 'ebRestoreStart').disabled = true;
+            updateRestorePasswordVisibility(view);
+            return;
+        }
+
+        select.disabled = false;
+        files.forEach(function (file) {
+            var option = el('option', null,
+                fmtDate(file.CreatedUtc || file.LastWriteUtc) + '  \u00b7  ' + file.FileName
+                    + (file.EncryptedKnown && file.Encrypted ? '  (password)' : ''));
+            option.value = file.FileName;
+            select.appendChild(option);
+        });
+
+        var stillThere = files.some(function (file) { return file.FileName === previous; });
+        if (stillThere) {
+            select.value = previous;
+        }
+
+        q(view, 'ebRestoreStart').disabled = !select.value;
+        updateRestorePasswordVisibility(view);
+    }
+
+    function selectedRestoreFile(view) {
+        var name = q(view, 'ebRestoreFile').value;
+        return (view.__ebFiles || []).filter(function (file) {
+            return file.FileName === name;
+        })[0] || null;
+    }
+
+    function updateRestorePasswordVisibility(view) {
+        var file = selectedRestoreFile(view);
+        var field = q(view, 'ebRestorePasswordField');
+        var protectedArchive = !!(file && file.EncryptedKnown !== false && file.Encrypted);
+        field.hidden = !protectedArchive;
+        if (!protectedArchive) {
+            q(view, 'ebRestorePassword').value = '';
+        }
     }
 
     function loadStatus(view) {
         return ApiClient.getJSON(ApiClient.getUrl('EmbyBackup/Status')).then(function (status) {
             renderStatus(view, status);
+            if (status.Restore && status.Restore.Running) {
+                startRestorePolling(view);
+            }
             return status;
         });
     }
@@ -572,8 +688,19 @@ define(['baseView', 'loading'], function (BaseView, loading) {
         closeBrowse(view);
     }
 
-    function verifyFile(view, fileName) {
-        postJson('EmbyBackup/Verify', { FileName: fileName }).then(function (result) {
+    function verifyFile(view, fileName, password) {
+        postJson('EmbyBackup/Verify', { FileName: fileName, Password: password || '' }).then(function (result) {
+            if (result.PasswordRequired || result.WrongPassword) {
+                var prompt = result.WrongPassword
+                    ? 'The password is incorrect. Try again.'
+                    : (result.Error || 'This backup is protected by a password.');
+                promptPassword(view, result.WrongPassword ? 'Wrong password' : 'Password required', prompt)
+                    .then(function (entered) {
+                        verifyFile(view, fileName, entered);
+                    }, function () { });
+                return;
+            }
+
             var lines = [];
             if (result.Valid) {
                 lines.push('The archive is valid.');
@@ -585,6 +712,7 @@ define(['baseView', 'loading'], function (BaseView, loading) {
             }
             lines.push('');
             lines.push('Archive: ' + fileName);
+            if (result.Encrypted) { lines.push('Protection: password (AES-256)'); }
             if (result.CheckedFiles || result.CheckedDatabases) {
                 lines.push('Checked ' + result.CheckedFiles + ' files and ' + result.CheckedDatabases + ' databases.');
             }
@@ -597,6 +725,293 @@ define(['baseView', 'loading'], function (BaseView, loading) {
         }, function () {
             toast('Could not verify the archive.');
         });
+    }
+
+    // --- Restore ---------------------------------------------------------
+    // The server checks the archive and the password first, then the page asks for two confirmations.
+    // The restore itself runs in the background and the page polls /EmbyBackup/RestoreStatus.
+
+    function promptPassword(view, title, message) {
+        return new Promise(function (resolve, reject) {
+            view.__ebPasswordResolve = resolve;
+            view.__ebPasswordReject = reject;
+            q(view, 'ebPasswordTitle').textContent = title || 'Password required';
+            q(view, 'ebPasswordBody').textContent = message || '';
+            q(view, 'ebPasswordInput').value = '';
+            q(view, 'ebPasswordError').hidden = true;
+            q(view, 'ebPasswordModal').hidden = false;
+            q(view, 'ebPasswordInput').focus();
+        });
+    }
+
+    function settlePassword(view, value) {
+        var resolve = view.__ebPasswordResolve;
+        var reject = view.__ebPasswordReject;
+        view.__ebPasswordResolve = null;
+        view.__ebPasswordReject = null;
+        q(view, 'ebPasswordModal').hidden = true;
+        if (value === undefined || value === null) {
+            if (reject) { reject({ cancelled: true }); }
+        } else if (resolve) {
+            resolve(value);
+        }
+    }
+
+    function submitPassword(view) {
+        var value = q(view, 'ebPasswordInput').value;
+        if (!value) {
+            var error = q(view, 'ebPasswordError');
+            error.textContent = 'Enter the password for this backup.';
+            error.hidden = false;
+            q(view, 'ebPasswordInput').focus();
+            return;
+        }
+        settlePassword(view, value);
+    }
+
+    function confirmAction(view, title, body, okLabel, danger) {
+        return new Promise(function (resolve) {
+            view.__ebConfirmResolve = resolve;
+            q(view, 'ebConfirmTitle').textContent = title || 'Are you sure?';
+            q(view, 'ebConfirmBody').textContent = body || '';
+            var ok = q(view, 'ebConfirmOk');
+            ok.textContent = okLabel || 'Continue';
+            ok.className = 'ebBtn ' + (danger ? 'ebDanger' : 'ebPrimary');
+            q(view, 'ebConfirmModal').hidden = false;
+            ok.focus();
+        });
+    }
+
+    function settleConfirm(view, value) {
+        var resolve = view.__ebConfirmResolve;
+        view.__ebConfirmResolve = null;
+        q(view, 'ebConfirmModal').hidden = true;
+        if (resolve) {
+            resolve(value);
+        }
+    }
+
+    function checkForRestore(view, fileName, password) {
+        return postJson('EmbyBackup/RestoreCheck', { FileName: fileName, Password: password || '' })
+            .then(function (result) {
+                if (result.PasswordRequired || result.WrongPassword) {
+                    var message = result.WrongPassword
+                        ? 'The password is incorrect. Try again.'
+                        : (result.Error || 'This backup is protected by a password.');
+                    return promptPassword(view, result.WrongPassword ? 'Wrong password' : 'Password required', message)
+                        .then(function (entered) {
+                            q(view, 'ebRestorePassword').value = entered;
+                            return checkForRestore(view, fileName, entered);
+                        });
+                }
+                return result;
+            });
+    }
+
+    function startRestoreFlow(view, fileName) {
+        if (!fileName) {
+            toast('Choose a backup archive first.');
+            return;
+        }
+
+        var button = q(view, 'ebRestoreStart');
+        button.disabled = true;
+        loading.show();
+
+        checkForRestore(view, fileName, q(view, 'ebRestorePassword').value || '')
+            .then(function (result) {
+                loading.hide();
+                if (!result.Success || !result.Valid) {
+                    button.disabled = false;
+                    showModal(view, 'This backup cannot be restored',
+                        result.Error || 'The archive did not pass validation.');
+                    return;
+                }
+
+                return confirmRestoreTwice(view, result).then(function (confirmed) {
+                    if (!confirmed) {
+                        button.disabled = false;
+                        return;
+                    }
+                    beginRestore(view, result, q(view, 'ebRestorePassword').value || '');
+                });
+            }, function (error) {
+                loading.hide();
+                button.disabled = false;
+                if (!error || !error.cancelled) {
+                    toast('Could not check the backup.');
+                }
+            });
+    }
+
+    function confirmRestoreTwice(view, check) {
+        var lines = [
+            'Archive: ' + check.FileName,
+            'Created: ' + fmtDate(check.CreatedUtc),
+            'Emby version: ' + (check.EmbyVersion || '\u2014'),
+            'Contents: ' + (check.FileCount || 0) + ' files / ' + (check.DatabaseCount || 0) + ' databases',
+            'Uncompressed data: ' + fmtBytes(check.TotalBytes),
+        ];
+        if (check.Encrypted) {
+            lines.push('Protection: password (AES-256)');
+        }
+        lines.push('');
+        lines.push('This replaces Emby\'s server configuration and databases with the contents of this backup.');
+        lines.push('The current Emby Backup settings (destination and credentials) are kept.');
+        lines.push('Files created after the backup are not deleted.');
+        lines.push('Emby must be restarted after the restore.');
+
+        return confirmAction(view, 'Restore this backup?', lines.join('\n'), 'Continue', false)
+            .then(function (ok) {
+                if (!ok) {
+                    return false;
+                }
+
+                return confirmAction(
+                    view,
+                    'Confirm the restore',
+                    'This cannot be undone from this page. Emby keeps running while its data is replaced, '
+                        + 'and you must restart it when the restore finishes.\n\n'
+                        + 'Restore "' + check.FileName + '" now?',
+                    'Restore now',
+                    true);
+            });
+    }
+
+    function beginRestore(view, check, password) {
+        q(view, 'ebRestoreStart').disabled = true;
+        q(view, 'ebRestartEmby').hidden = true;
+        renderRestore(view, {
+            Running: true,
+            State: 'running',
+            Progress: 0,
+            Message: 'Starting the restore...',
+            FileName: check.FileName
+        });
+
+        postJson('EmbyBackup/Restore', {
+            FileName: check.FileName,
+            Password: password || '',
+            Confirm: true
+        }).then(function (result) {
+            if (!result.Started) {
+                q(view, 'ebRestoreStart').disabled = false;
+                renderRestore(view, result.Status || {
+                    State: 'failed',
+                    Message: result.Message,
+                    Error: result.Message
+                });
+                toast(result.Message || 'Could not start the restore.');
+                return;
+            }
+
+            renderRestore(view, result.Status || {});
+            startRestorePolling(view);
+        }, function () {
+            q(view, 'ebRestoreStart').disabled = false;
+            toast('Could not start the restore.');
+        });
+    }
+
+    function renderRestore(view, status) {
+        status = status || {};
+        var running = !!status.Running;
+        var hasRun = running || !!status.StartedUtc || status.State === 'success'
+            || status.State === 'failed' || status.State === 'cancelled';
+
+        var wrap = q(view, 'ebRestoreProgressWrap');
+        wrap.hidden = !hasRun;
+        q(view, 'ebRestoreBar').style.width = Math.max(0, Math.min(100, status.Progress || 0)) + '%';
+
+        var message = q(view, 'ebRestoreMessage');
+        message.hidden = !hasRun;
+        if (hasRun) {
+            var text = status.Message || stateText(status.State);
+            if (status.Error && status.Error !== status.Message) {
+                text += ' ' + status.Error;
+            }
+            if (status.State === 'success' && (status.RestoredFiles || status.RestoredDatabases)) {
+                text += ' Restored ' + (status.RestoredFiles || 0) + ' files and '
+                    + (status.RestoredDatabases || 0) + ' databases.';
+            }
+            message.textContent = text;
+            message.className = status.State === 'failed'
+                ? 'ebError ebSmall'
+                : 'ebMuted ebSmall';
+        }
+
+        var warnings = q(view, 'ebRestoreWarnings');
+        warnings.textContent = '';
+        (status.Warnings || []).forEach(function (warning) {
+            warnings.appendChild(el('div', 'ebWarn', warning));
+        });
+
+        var select = q(view, 'ebRestoreFile');
+        var start = q(view, 'ebRestoreStart');
+        start.disabled = running || !select.value || select.disabled;
+        q(view, 'ebRestartEmby').hidden = !(status.State === 'success' && status.RestartRequired);
+    }
+
+    function loadRestoreStatus(view) {
+        return ApiClient.getJSON(ApiClient.getUrl('EmbyBackup/RestoreStatus')).then(function (status) {
+            renderRestore(view, status || {});
+            return status;
+        });
+    }
+
+    function startRestorePolling(view) {
+        if (view.__ebRestoreTimer) {
+            return;
+        }
+
+        view.__ebRestoreTimer = setInterval(function () {
+            if (!view.isConnected || !view.getClientRects().length) {
+                stopRestorePolling(view);
+                return;
+            }
+
+            loadRestoreStatus(view).then(function (status) {
+                if (!status.Running) {
+                    stopRestorePolling(view);
+                    refreshLists(view);
+                    loadStatus(view);
+                }
+            }, function () { });
+        }, 1000);
+    }
+
+    function stopRestorePolling(view) {
+        if (view.__ebRestoreTimer) {
+            clearInterval(view.__ebRestoreTimer);
+            view.__ebRestoreTimer = null;
+        }
+    }
+
+    function restartEmby(view) {
+        confirmAction(
+            view,
+            'Restart Emby?',
+            'Emby will restart now to load the restored data. This page will lose its connection for a moment; '
+                + 'reload it when the server is back.',
+            'Restart Emby',
+            true).then(function (ok) {
+                if (!ok) {
+                    return;
+                }
+
+                q(view, 'ebRestartEmby').disabled = true;
+                postJson('System/Restart', {}).then(function () {
+                    toast('Emby is restarting...');
+                    q(view, 'ebRestartEmby').hidden = true;
+                    var message = q(view, 'ebRestoreMessage');
+                    message.hidden = false;
+                    message.className = 'ebMuted ebSmall';
+                    message.textContent = 'Emby is restarting. Reload this page in a minute.';
+                }, function () {
+                    q(view, 'ebRestartEmby').disabled = false;
+                    toast('Could not restart Emby. Restart it manually.');
+                });
+            });
     }
 
     function runBackup(view) {
@@ -620,10 +1035,12 @@ define(['baseView', 'loading'], function (BaseView, loading) {
                 refreshLists(view);
                 loadStatus(view);
             }
-        }, function () {
+        }, function (error) {
             loading.hide();
             button.disabled = false;
-            toast('Could not start the backup.');
+            if (!error || !error.ebHandled) {
+                toast('Could not start the backup.');
+            }
         });
     }
 
@@ -646,10 +1063,12 @@ define(['baseView', 'loading'], function (BaseView, loading) {
                 message += '\n\n' + result.Location;
             }
             showModal(view, result.Success ? 'Destination ready' : 'Destination not available', message);
-        }, function () {
+        }, function (error) {
             loading.hide();
             button.disabled = false;
-            toast('Could not test the destination.');
+            if (!error || !error.ebHandled) {
+                toast('Could not test the destination.');
+            }
         });
     }
 
@@ -687,9 +1106,11 @@ define(['baseView', 'loading'], function (BaseView, loading) {
             saveSettings(view).then(function (result) {
                 loading.hide();
                 Dashboard.processPluginConfigurationUpdateResult(result);
-            }, function () {
+            }, function (error) {
                 loading.hide();
-                toast('Saving failed.');
+                if (!error || !error.ebHandled) {
+                    toast('Saving failed.');
+                }
             });
             return false;
         });
@@ -698,11 +1119,15 @@ define(['baseView', 'loading'], function (BaseView, loading) {
             'ebDestination', 'ebNetworkPath', 'ebNetworkUser', 'ebNetworkPassword', 'ebNetworkDomain',
             'ebFtpHost', 'ebFtpPort', 'ebFtpPath', 'ebFtpUser', 'ebFtpPassword', 'ebFtpTls', 'ebFtpPassive',
             'ebFtpCert', 'ebRetention', 'ebCompression', 'ebBusySeconds', 'ebScheduled', 'ebVerify',
-            'ebSchedulePeriod', 'ebScheduleDay', 'ebScheduleTime'
+            'ebSchedulePeriod', 'ebScheduleDay', 'ebScheduleTime', 'ebProtect', 'ebBackupPassword'
         ].forEach(function (id) {
             var input = q(view, id);
             input.addEventListener('input', function () { setDirty(view, true); });
             input.addEventListener('change', function () { setDirty(view, true); });
+        });
+
+        q(view, 'ebProtect').addEventListener('change', function () {
+            updateProtectionFields(view);
         });
 
         ['ebSchedulePeriod', 'ebScheduleDay', 'ebScheduleTime', 'ebScheduled'].forEach(function (id) {
@@ -729,6 +1154,51 @@ define(['baseView', 'loading'], function (BaseView, loading) {
                 e.preventDefault();
                 e.stopPropagation();
                 hideModal(view);
+            }
+        });
+
+        q(view, 'ebRestoreStart').addEventListener('click', function () {
+            startRestoreFlow(view, q(view, 'ebRestoreFile').value);
+        });
+        q(view, 'ebRestartEmby').addEventListener('click', function () { restartEmby(view); });
+        q(view, 'ebRestoreFile').addEventListener('change', function () {
+            updateRestorePasswordVisibility(view);
+            q(view, 'ebRestoreStart').disabled = !q(view, 'ebRestoreFile').value;
+        });
+
+        q(view, 'ebConfirmCancel').addEventListener('click', function () { settleConfirm(view, false); });
+        q(view, 'ebConfirmOk').addEventListener('click', function () { settleConfirm(view, true); });
+        q(view, 'ebConfirmModal').addEventListener('click', function (e) {
+            if (e.target === q(view, 'ebConfirmModal')) {
+                settleConfirm(view, false);
+            }
+        });
+        q(view, 'ebConfirmModal').addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                settleConfirm(view, false);
+            }
+        });
+
+        q(view, 'ebPasswordCancel').addEventListener('click', function () { settlePassword(view, null); });
+        q(view, 'ebPasswordOk').addEventListener('click', function () { submitPassword(view); });
+        q(view, 'ebPasswordInput').addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                submitPassword(view);
+            }
+        });
+        q(view, 'ebPasswordModal').addEventListener('click', function (e) {
+            if (e.target === q(view, 'ebPasswordModal')) {
+                settlePassword(view, null);
+            }
+        });
+        q(view, 'ebPasswordModal').addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                settlePassword(view, null);
             }
         });
 
@@ -765,6 +1235,14 @@ define(['baseView', 'loading'], function (BaseView, loading) {
                 e.preventDefault();
                 e.stopPropagation();
                 closeBrowse(view);
+            } else if (!q(view, 'ebConfirmModal').hidden) {
+                e.preventDefault();
+                e.stopPropagation();
+                settleConfirm(view, false);
+            } else if (!q(view, 'ebPasswordModal').hidden) {
+                e.preventDefault();
+                e.stopPropagation();
+                settlePassword(view, null);
             } else if (!q(view, 'ebModal').hidden) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -785,6 +1263,7 @@ define(['baseView', 'loading'], function (BaseView, loading) {
         var self = this;
         this._wasRunning = false;
         this._lastSignature = null;
+        stopRestorePolling(view);
 
         loadSettings(view).then(null, function () {
             toast('Could not load the plugin settings.');
@@ -825,6 +1304,9 @@ define(['baseView', 'loading'], function (BaseView, loading) {
         if (this._timer) {
             clearInterval(this._timer);
             this._timer = null;
+        }
+        if (this.view) {
+            stopRestorePolling(this.view);
         }
         BaseView.prototype.onPause.apply(this, arguments);
     };

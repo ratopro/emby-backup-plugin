@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.IO.Compression;
 using System.Security.Cryptography;
 
 namespace EmbyBackup.Core
@@ -9,6 +8,9 @@ namespace EmbyBackup.Core
     public sealed class BackupVerificationResult
     {
         public bool Valid { get; set; }
+        public bool Encrypted { get; set; }
+        public bool PasswordRequired { get; set; }
+        public bool WrongPassword { get; set; }
         public string Error { get; set; }
         public BackupManifest Manifest { get; set; }
         public int CheckedFiles { get; set; }
@@ -17,7 +19,7 @@ namespace EmbyBackup.Core
 
     public sealed class BackupVerifier
     {
-        public BackupVerificationResult Verify(string archivePath, bool compareSidecar)
+        public BackupVerificationResult Verify(string archivePath, bool compareSidecar, string password = null)
         {
             var result = new BackupVerificationResult();
             if (!File.Exists(archivePath))
@@ -30,7 +32,7 @@ namespace EmbyBackup.Core
             {
                 if (compareSidecar)
                 {
-                    var sidecar = archivePath + ".sha256";
+                    var sidecar = archivePath + BackupConstants.SidecarSuffix;
                     if (File.Exists(sidecar))
                     {
                         var expected = File.ReadAllText(sidecar).Trim().Split(' ')[0];
@@ -43,10 +45,17 @@ namespace EmbyBackup.Core
                     }
                 }
 
-                using (var stream = new FileStream(archivePath, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.SequentialScan))
-                using (var archive = new ZipArchive(stream, ZipArchiveMode.Read, false))
+                using (var reader = new ZipReader(archivePath))
                 {
-                    var manifestEntry = archive.GetEntry(BackupConstants.ManifestEntryName);
+                    result.Encrypted = reader.IsEncrypted;
+                    if (reader.IsEncrypted && string.IsNullOrEmpty(password))
+                    {
+                        result.PasswordRequired = true;
+                        result.Error = "This backup is protected by a password.";
+                        return result;
+                    }
+
+                    var manifestEntry = reader.Find(BackupConstants.ManifestEntryName);
                     if (manifestEntry == null)
                     {
                         result.Error = "manifest.json is missing.";
@@ -54,9 +63,31 @@ namespace EmbyBackup.Core
                     }
 
                     BackupManifest manifest;
-                    using (var manifestStream = manifestEntry.Open())
+                    try
                     {
-                        manifest = JsonCodec.ReadFromStream<BackupManifest>(manifestStream);
+                        var manifestBytes = reader.ReadAllBytes(manifestEntry, password, 16 * 1024 * 1024);
+                        using (var manifestStream = new MemoryStream(manifestBytes, false))
+                        {
+                            manifest = JsonCodec.ReadFromStream<BackupManifest>(manifestStream);
+                        }
+                    }
+                    catch (ZipPasswordRequiredException ex)
+                    {
+                        result.PasswordRequired = true;
+                        result.Error = ex.Message;
+                        return result;
+                    }
+                    catch (ZipWrongPasswordException ex)
+                    {
+                        result.WrongPassword = true;
+                        result.Error = ex.Message;
+                        return result;
+                    }
+                    catch (ZipAuthenticationException ex)
+                    {
+                        result.WrongPassword = true;
+                        result.Error = ex.Message;
+                        return result;
                     }
 
                     if (manifest == null)
@@ -82,7 +113,7 @@ namespace EmbyBackup.Core
 
                     foreach (var file in manifest.Files)
                     {
-                        var error = VerifyEntry(archive, file.Path, file.Bytes, file.Sha256, expectedNames);
+                        var error = VerifyEntry(reader, file.Path, file.Bytes, file.Sha256, password, expectedNames, result);
                         if (error != null)
                         {
                             result.Error = error;
@@ -93,7 +124,8 @@ namespace EmbyBackup.Core
 
                     foreach (var database in manifest.Databases)
                     {
-                        var error = VerifyEntry(archive, database.Path, database.Bytes, database.Sha256, expectedNames);
+                        var error = VerifyEntry(reader, database.Path, database.Bytes, database.Sha256, password,
+                            expectedNames, result);
                         if (error != null)
                         {
                             result.Error = error;
@@ -102,17 +134,35 @@ namespace EmbyBackup.Core
                         result.CheckedDatabases++;
                     }
 
-                    foreach (var entry in archive.Entries)
+                    foreach (var entry in reader.Entries)
                     {
-                        if (!expectedNames.Contains(entry.FullName))
+                        if (!expectedNames.Contains(entry.Name))
                         {
-                            result.Error = "Unexpected file in archive: " + entry.FullName;
+                            result.Error = "Unexpected file in archive: " + entry.Name;
                             return result;
                         }
                     }
                 }
 
                 result.Valid = true;
+                return result;
+            }
+            catch (ZipPasswordRequiredException ex)
+            {
+                result.PasswordRequired = true;
+                result.Error = ex.Message;
+                return result;
+            }
+            catch (ZipWrongPasswordException ex)
+            {
+                result.WrongPassword = true;
+                result.Error = ex.Message;
+                return result;
+            }
+            catch (ZipAuthenticationException ex)
+            {
+                result.WrongPassword = true;
+                result.Error = ex.Message;
                 return result;
             }
             catch (Exception ex)
@@ -122,32 +172,75 @@ namespace EmbyBackup.Core
             }
         }
 
-        private static string VerifyEntry(ZipArchive archive, string name, long expectedBytes, string expectedSha, HashSet<string> seen)
+        private static string VerifyEntry(
+            ZipReader reader,
+            string name,
+            long expectedBytes,
+            string expectedSha,
+            string password,
+            HashSet<string> seen,
+            BackupVerificationResult result)
         {
             if (string.IsNullOrEmpty(name) || !seen.Add(name))
             {
                 return "Duplicate or empty path in manifest: " + name;
             }
 
-            var entry = archive.GetEntry(name);
+            var entry = reader.Find(name);
             if (entry == null)
             {
                 return "Missing from archive: " + name;
             }
 
-            if (entry.Length != expectedBytes)
+            if (entry.UncompressedSize != expectedBytes)
             {
-                return "Size mismatch for " + name + ": manifest says " + expectedBytes + ", archive says " + entry.Length;
+                return "Size mismatch for " + name + ": manifest says " + expectedBytes
+                    + ", archive says " + entry.UncompressedSize;
             }
 
-            using (var input = entry.Open())
-            using (var sha = SHA256.Create())
+            try
             {
-                var actual = BackupFormat.Sha256(sha.ComputeHash(input));
-                if (!string.Equals(actual, expectedSha, StringComparison.OrdinalIgnoreCase))
+                using (var handle = reader.OpenEntry(entry, password))
+                using (var sha = SHA256.Create())
                 {
-                    return "SHA-256 mismatch for " + name;
+                    var buffer = new byte[1024 * 1024];
+                    while (true)
+                    {
+                        var read = handle.Stream.Read(buffer, 0, buffer.Length);
+                        if (read <= 0)
+                        {
+                            break;
+                        }
+                        sha.TransformBlock(buffer, 0, read, buffer, 0);
+                    }
+
+                    handle.Complete();
+                    sha.TransformFinalBlock(new byte[0], 0, 0);
+                    var actual = BackupFormat.Sha256(sha.Hash);
+                    if (!string.Equals(actual, expectedSha, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return "SHA-256 mismatch for " + name;
+                    }
                 }
+            }
+            catch (ZipPasswordRequiredException ex)
+            {
+                result.PasswordRequired = true;
+                return ex.Message;
+            }
+            catch (ZipWrongPasswordException ex)
+            {
+                result.WrongPassword = true;
+                return ex.Message;
+            }
+            catch (ZipAuthenticationException ex)
+            {
+                result.WrongPassword = true;
+                return ex.Message;
+            }
+            catch (InvalidDataException ex)
+            {
+                return "Could not read " + name + ": " + ex.Message;
             }
 
             return null;

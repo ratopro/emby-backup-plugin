@@ -69,7 +69,7 @@ namespace EmbyBackup
                 return new BackupStartResult
                 {
                     Started = false,
-                    Message = "A backup is already running.",
+                    Message = "A backup or restore is already running.",
                     Status = GetStatus(),
                 };
             }
@@ -151,6 +151,34 @@ namespace EmbyBackup
             }
         }
 
+        public static string ProgramDataPath
+        {
+            get
+            {
+                EnsureConfigured();
+                return _programDataPath;
+            }
+        }
+
+        /// <summary>
+        /// The backup and restore jobs share one lock: only one operation that reads or writes the program
+        /// data folder may run at a time. RestoreRuntime uses these methods around its background task.
+        /// </summary>
+        internal static bool TryEnterOperation()
+        {
+            return RunLock.Wait(0);
+        }
+
+        internal static void ExitOperation()
+        {
+            RunLock.Release();
+        }
+
+        internal static bool IsOperationRunning
+        {
+            get { return RunLock.CurrentCount == 0; }
+        }
+
         public static string DestinationPath
         {
             get
@@ -219,6 +247,14 @@ namespace EmbyBackup
                 var configuration = plugin.Configuration;
                 configuration.Normalize();
 
+                if (configuration.ProtectBackupsWithPassword
+                    && string.IsNullOrEmpty(configuration.BackupPassword))
+                {
+                    throw new InvalidOperationException(
+                        "Password protection is enabled but no backup password is set. "
+                        + "Set one in the plugin settings or turn password protection off.");
+                }
+
                 var request = new BackupRequest
                 {
                     ProgramDataPath = _programDataPath,
@@ -231,6 +267,9 @@ namespace EmbyBackup
                     RetentionCount = configuration.RetentionCount,
                     BusyTimeoutSeconds = configuration.BusyTimeoutSeconds,
                     VerifyAfterCreate = configuration.VerifyAfterCreate,
+                    Password = configuration.ProtectBackupsWithPassword
+                        ? configuration.BackupPassword
+                        : null,
                     Log = message =>
                     {
                         try

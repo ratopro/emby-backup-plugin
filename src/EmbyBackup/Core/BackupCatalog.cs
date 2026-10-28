@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
-using System.IO.Compression;
 
 namespace EmbyBackup.Core
 {
@@ -16,6 +15,7 @@ namespace EmbyBackup.Core
         public DateTime CreatedUtcValue { get; set; }
         public bool IsEmbyBackup { get; set; }
         public bool HasManifest { get; set; }
+        public bool Encrypted { get; set; }
         public string Error { get; set; }
         public int FileCount { get; set; }
         public int DatabaseCount { get; set; }
@@ -89,28 +89,27 @@ namespace EmbyBackup.Core
                     HasChecksumFile = File.Exists(archivePath + BackupConstants.SidecarSuffix),
                 };
 
-                var manifest = ReadManifest(archivePath, out var error);
-                if (manifest != null)
+                using (var reader = new ZipReader(archivePath))
                 {
-                    info.HasManifest = true;
-                    info.IsEmbyBackup = string.Equals(manifest.Format, BackupConstants.FormatName, StringComparison.Ordinal);
-                    info.CreatedUtc = manifest.CreatedUtc;
-                    info.FileCount = manifest.Files == null ? 0 : manifest.Files.Count;
-                    info.DatabaseCount = manifest.Databases == null ? 0 : manifest.Databases.Count;
-                    info.TotalBytes = manifest.TotalBytes;
-
-                    if (DateTime.TryParse(
-                        manifest.CreatedUtc,
-                        CultureInfo.InvariantCulture,
-                        DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
-                        out var created))
+                    info.Encrypted = reader.IsEncrypted;
+                    if (reader.IsEncrypted)
                     {
-                        info.CreatedUtcValue = created;
+                        // The manifest is encrypted too, so its contents cannot be shown without the
+                        // password. The .sha256 sidecar is the ownership marker in this case.
+                        info.IsEmbyBackup = info.HasChecksumFile;
+                        info.CreatedUtcValue = TimestampFromName(file.Name, file.LastWriteTimeUtc);
+                        return info;
                     }
-                }
-                else
-                {
-                    info.Error = error;
+
+                    var manifest = ReadManifest(reader, out var error);
+                    if (manifest != null)
+                    {
+                        ApplyManifest(info, manifest);
+                    }
+                    else
+                    {
+                        info.Error = error;
+                    }
                 }
 
                 return info;
@@ -126,30 +125,20 @@ namespace EmbyBackup.Core
             }
         }
 
-        public static BackupManifest ReadManifest(string archivePath, out string error)
+        public static BackupManifest ReadManifest(string archivePath, out string error, string password = null)
         {
             error = null;
             try
             {
-                using (var stream = new FileStream(archivePath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.SequentialScan))
-                using (var archive = new ZipArchive(stream, ZipArchiveMode.Read, false))
+                using (var reader = new ZipReader(archivePath))
                 {
-                    var entry = archive.GetEntry(BackupConstants.ManifestEntryName);
-                    if (entry == null)
+                    if (reader.IsEncrypted && string.IsNullOrEmpty(password))
                     {
-                        error = "manifest.json is missing.";
+                        error = "This backup is protected by a password.";
                         return null;
                     }
 
-                    using (var manifestStream = entry.Open())
-                    {
-                        var manifest = JsonCodec.ReadFromStream<BackupManifest>(manifestStream);
-                        if (manifest == null)
-                        {
-                            error = "manifest.json could not be read.";
-                        }
-                        return manifest;
-                    }
+                    return ReadManifest(reader, out error, password);
                 }
             }
             catch (Exception ex)
@@ -159,6 +148,66 @@ namespace EmbyBackup.Core
             }
         }
 
+        private static BackupManifest ReadManifest(ZipReader reader, out string error, string password = null)
+        {
+            error = null;
+            var entry = reader.Find(BackupConstants.ManifestEntryName);
+            if (entry == null)
+            {
+                error = "manifest.json is missing.";
+                return null;
+            }
+
+            try
+            {
+                var bytes = reader.ReadAllBytes(entry, password, 16 * 1024 * 1024);
+                using (var stream = new MemoryStream(bytes, false))
+                {
+                    var manifest = JsonCodec.ReadFromStream<BackupManifest>(stream);
+                    if (manifest == null)
+                    {
+                        error = "manifest.json could not be read.";
+                    }
+                    return manifest;
+                }
+            }
+            catch (ZipPasswordRequiredException ex)
+            {
+                error = ex.Message;
+                return null;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return null;
+            }
+        }
+
+        private static void ApplyManifest(BackupArchiveInfo info, BackupManifest manifest)
+        {
+            info.HasManifest = true;
+            info.IsEmbyBackup = string.Equals(manifest.Format, BackupConstants.FormatName, StringComparison.Ordinal);
+            info.CreatedUtc = manifest.CreatedUtc;
+            info.FileCount = manifest.Files == null ? 0 : manifest.Files.Count;
+            info.DatabaseCount = manifest.Databases == null ? 0 : manifest.Databases.Count;
+            info.TotalBytes = manifest.TotalBytes;
+
+            if (DateTime.TryParse(
+                manifest.CreatedUtc,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+                out var created))
+            {
+                info.CreatedUtcValue = created;
+            }
+        }
+
+        private static DateTime TimestampFromName(string fileName, DateTime fallback)
+        {
+            DateTime stamp;
+            return BackupFormat.TryParseArchiveStamp(fileName, out stamp) ? stamp : fallback;
+        }
+
         public static bool IsManagedFileName(string fileName)
         {
             return !string.IsNullOrEmpty(fileName)
@@ -166,6 +215,44 @@ namespace EmbyBackup.Core
                 && fileName.IndexOf('\\') < 0
                 && fileName.StartsWith(BackupConstants.ArchivePrefix, StringComparison.OrdinalIgnoreCase)
                 && fileName.EndsWith(BackupConstants.ArchiveSuffix, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// True when a foreign file proves it belongs to this plugin: a valid manifest, or the AES
+        /// container plus the .sha256 sidecar written by the plugin (the manifest cannot be read without
+        /// the password).
+        /// </summary>
+        public static bool IsOwnedArchive(string archivePath)
+        {
+            var manifest = ReadManifest(archivePath, out _);
+            if (manifest != null)
+            {
+                return string.Equals(manifest.Format, BackupConstants.FormatName, StringComparison.Ordinal);
+            }
+
+            var sidecar = archivePath + BackupConstants.SidecarSuffix;
+            if (!File.Exists(sidecar))
+            {
+                return false;
+            }
+
+            try
+            {
+                var text = File.ReadAllText(sidecar);
+                string ignored;
+                if (!BackupFormat.IsValidSidecar(text, Path.GetFileName(archivePath), out ignored))
+                {
+                    return false;
+                }
+
+                bool encrypted;
+                string error;
+                return ZipReader.TryInspect(archivePath, out encrypted, out error) && encrypted;
+            }
+            catch
+            {
+                return false;
+            }
         }
     }
 }

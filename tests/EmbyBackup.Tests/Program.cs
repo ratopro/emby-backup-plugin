@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using EmbyBackup.Core;
 
@@ -281,12 +283,482 @@ namespace EmbyBackup.Tests
             }
 
             ScheduleRuleChecks();
+            ZipChecks();
+            EncryptedBackupChecks();
+            RestoreChecks();
 
             Console.WriteLine();
             Console.WriteLine(_failures == 0
                 ? "All " + _checks + " checks passed."
                 : _failures + " of " + _checks + " checks FAILED.");
             Environment.Exit(_failures == 0 ? 0 : 1);
+        }
+
+        private static void RestoreChecks()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "embybackup-restore-tests", Guid.NewGuid().ToString("N"));
+            var source = Path.Combine(root, "programdata");
+            var pluginData = Path.Combine(root, "plugindata");
+            var destination = Path.Combine(root, "backups");
+            const string password = "restore-pass";
+
+            try
+            {
+                Directory.CreateDirectory(root);
+                BuildProgramData(source);
+                Directory.CreateDirectory(destination);
+                var dbPath = Path.Combine(source, "data", "library.db");
+                using (var db = Sqlite.Open(dbPath))
+                {
+                    Sqlite.Exec(db, "CREATE TABLE items (Id INTEGER PRIMARY KEY, Name TEXT NOT NULL);");
+                    Sqlite.Exec(db, "INSERT INTO items (Id, Name) VALUES (1, 'Original row');");
+                }
+
+                var backup = RunBackup(source, pluginData, destination, 2, CancellationToken.None, password);
+                Check(backup.Success, "the backup used by the restore test succeeds: " + backup.Error);
+                var archive = BackupCatalog.List(destination).First(a => a.Encrypted).FullPath;
+
+                var restoreDestination = new BackupDestinationSettings
+                {
+                    Type = BackupDestinationKinds.Local,
+                    Path = destination,
+                };
+                var check = new RestoreService(10, _ => { }).Check(new RestoreRequest
+                {
+                    ProgramDataPath = source,
+                    PluginDataPath = pluginData,
+                    Destination = restoreDestination,
+                    FileName = Path.GetFileName(archive),
+                    Password = password,
+                });
+                Check(check.Success && check.Valid, "the restore check accepts the encrypted archive: " + check.Error);
+                Check(check.Encrypted, "the restore check reports the archive as encrypted");
+                Check(check.DatabaseCount == 1, "the restore check reports the database");
+
+                var noPassword = new RestoreService(10, _ => { }).Check(new RestoreRequest
+                {
+                    ProgramDataPath = source,
+                    PluginDataPath = pluginData,
+                    Destination = restoreDestination,
+                    FileName = Path.GetFileName(archive),
+                });
+                Check(noPassword.PasswordRequired, "the restore check asks for the password");
+
+                var wrong = new RestoreService(10, _ => { }).Check(new RestoreRequest
+                {
+                    ProgramDataPath = source,
+                    PluginDataPath = pluginData,
+                    Destination = restoreDestination,
+                    FileName = Path.GetFileName(archive),
+                    Password = "nope",
+                });
+                Check(wrong.WrongPassword, "the restore check rejects a wrong password");
+
+                // Change everything after the backup. A failed restore must leave it untouched.
+                File.WriteAllText(Path.Combine(source, "config", "system.xml"),
+                    "<ServerConfiguration><Changed>true</Changed></ServerConfiguration>");
+                File.WriteAllText(Path.Combine(source, "plugins", "configurations", "EmbyBackup.xml"),
+                    "<PluginConfiguration><Current>true</Current></PluginConfiguration>");
+                using (var db = Sqlite.Open(dbPath))
+                {
+                    Sqlite.Exec(db, "INSERT INTO items (Id, Name) VALUES (2, 'After backup');");
+                }
+                File.WriteAllText(Path.Combine(source, "config", "created-after-backup.txt"), "keep me");
+
+                var failed = new RestoreService(10, _ => { }).Run(new RestoreRequest
+                {
+                    ProgramDataPath = source,
+                    PluginDataPath = pluginData,
+                    Destination = restoreDestination,
+                    FileName = Path.GetFileName(archive),
+                    Password = "nope",
+                }, CancellationToken.None);
+                Check(!failed.Success, "a restore with the wrong password fails");
+                Check(!failed.Applied, "a restore that fails while checking does not touch the data");
+                Check(File.ReadAllText(Path.Combine(source, "config", "system.xml")).Contains("Changed"),
+                    "the failed restore leaves config/system.xml untouched");
+                using (var db = Sqlite.Open(dbPath, readOnly: true))
+                {
+                    Check(Sqlite.Scalar(db, "SELECT COUNT(*) FROM items") == "2",
+                        "the failed restore leaves the database untouched");
+                }
+
+                var restored = new RestoreService(10, _ => { }).Run(new RestoreRequest
+                {
+                    ProgramDataPath = source,
+                    PluginDataPath = pluginData,
+                    Destination = restoreDestination,
+                    FileName = Path.GetFileName(archive),
+                    Password = password,
+                }, CancellationToken.None);
+                Check(restored.Success, "the restore succeeds: " + restored.Error);
+                Check(restored.Applied, "the restore reports that it applied data");
+                Check(restored.RestartRequired, "the restore requires an Emby restart");
+                Check(restored.RestoredDatabases == 1, "the restore applies the database");
+
+                Check(File.ReadAllText(Path.Combine(source, "config", "system.xml")).Contains("ServerConfiguration")
+                    && !File.ReadAllText(Path.Combine(source, "config", "system.xml")).Contains("Changed"),
+                    "the restore reverts config/system.xml to the backup");
+                Check(File.ReadAllText(Path.Combine(source, "plugins", "configurations", "EmbyBackup.xml"))
+                        .Contains("Current"),
+                    "the restore keeps the current plugin settings");
+                Check(File.Exists(Path.Combine(source, "config", "created-after-backup.txt")),
+                    "the restore does not delete files that were created after the backup");
+                using (var db = Sqlite.Open(dbPath, readOnly: true))
+                {
+                    Check(Sqlite.Scalar(db, "SELECT COUNT(*) FROM items") == "1",
+                        "the restored database has the backup contents");
+                    Check(Sqlite.Scalar(db, "SELECT Name FROM items WHERE Id=1") == "Original row",
+                        "the restored database contains the original row");
+                }
+
+                // A malicious manifest with a path traversal entry must be rejected before applying anything.
+                var malicious = Path.Combine(destination, "emby-backup-20260101-000000Z.zip");
+                var escapeTarget = Path.Combine(root, "escape.txt");
+                var evilBytes = Encoding.UTF8.GetBytes("escaped");
+                var evilSha = BackupFormat.Sha256(
+                    System.Security.Cryptography.SHA256.Create().ComputeHash(evilBytes));
+                var evilManifest = new BackupManifest
+                {
+                    CreatedUtc = BackupFormat.Utc(DateTime.UtcNow),
+                    Files = new List<BackupFileEntry>
+                    {
+                        new BackupFileEntry
+                        {
+                            Path = "../escape.txt",
+                            Bytes = evilBytes.Length,
+                            Sha256 = evilSha,
+                            LastWriteUtc = BackupFormat.Utc(DateTime.UtcNow),
+                        },
+                    },
+                };
+                using (var output = new FileStream(malicious, FileMode.Create, FileAccess.Write))
+                using (var zip = new ZipArchive(output, ZipArchiveMode.Create))
+                {
+                    var manifestEntry = zip.CreateEntry(BackupConstants.ManifestEntryName);
+                    using (var stream = manifestEntry.Open())
+                    {
+                        JsonCodec.WriteToStream(stream, evilManifest);
+                    }
+                    var evil = zip.CreateEntry("../escape.txt");
+                    using (var stream = evil.Open())
+                    {
+                        stream.Write(evilBytes, 0, evilBytes.Length);
+                    }
+                }
+
+                var evilCheck = new RestoreService(10, _ => { }).Check(new RestoreRequest
+                {
+                    ProgramDataPath = source,
+                    PluginDataPath = pluginData,
+                    Destination = restoreDestination,
+                    FileName = Path.GetFileName(malicious),
+                });
+                Check(!evilCheck.Success, "a manifest with path traversal is rejected by the check");
+
+                var evilRun = new RestoreService(10, _ => { }).Run(new RestoreRequest
+                {
+                    ProgramDataPath = source,
+                    PluginDataPath = pluginData,
+                    Destination = restoreDestination,
+                    FileName = Path.GetFileName(malicious),
+                }, CancellationToken.None);
+                Check(!evilRun.Success, "a manifest with path traversal cannot be restored");
+                Check(!File.Exists(escapeTarget), "the path traversal entry never reaches the filesystem");
+            }
+            finally
+            {
+                try
+                {
+                    if (Directory.Exists(root))
+                    {
+                        Directory.Delete(root, true);
+                    }
+                }
+                catch
+                {
+                    // Best effort.
+                }
+            }
+        }
+
+        private static void EncryptedBackupChecks()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "embybackup-encrypted-tests", Guid.NewGuid().ToString("N"));
+            var source = Path.Combine(root, "programdata");
+            var pluginData = Path.Combine(root, "plugindata");
+            var destination = Path.Combine(root, "backups");
+            const string password = "correct horse battery staple";
+
+            try
+            {
+                Directory.CreateDirectory(root);
+                BuildProgramData(source);
+                Directory.CreateDirectory(destination);
+                using (var db = Sqlite.Open(Path.Combine(source, "data", "library.db")))
+                {
+                    Sqlite.Exec(db, "CREATE TABLE items (Id INTEGER PRIMARY KEY, Name TEXT NOT NULL);");
+                    Sqlite.Exec(db, "INSERT INTO items (Id, Name) VALUES (1, 'Encrypted backup row');");
+                }
+
+                var result = RunBackup(source, pluginData, destination, 2, CancellationToken.None, password);
+                Check(result.Success, "an encrypted backup succeeds: " + result.Error);
+                Check(result.Encrypted, "the backup result reports encryption");
+                Check(result.Verified, "the encrypted backup verifies during creation");
+
+                var encryptedArchives = BackupCatalog.List(destination).Where(a => a.Encrypted).ToList();
+                Check(encryptedArchives.Count == 1, "the destination lists one encrypted archive");
+                Check(!encryptedArchives[0].HasManifest,
+                    "the encrypted archive does not expose its manifest without the password");
+                Check(encryptedArchives[0].IsEmbyBackup,
+                    "the .sha256 sidecar identifies the encrypted archive as ours");
+
+                bool encrypted;
+                string inspectError;
+                Check(ZipReader.TryInspect(encryptedArchives[0].FullPath, out encrypted, out inspectError) && encrypted,
+                    "the archive is an AES ZIP: " + inspectError);
+
+                var noPassword = new BackupVerifier().Verify(encryptedArchives[0].FullPath, true);
+                Check(!noPassword.Valid, "verifying an encrypted backup without a password fails");
+                Check(noPassword.PasswordRequired, "the verifier asks for the password");
+
+                var wrongPassword = new BackupVerifier().Verify(encryptedArchives[0].FullPath, true, "wrong");
+                Check(!wrongPassword.Valid, "verifying an encrypted backup with a wrong password fails");
+                Check(wrongPassword.WrongPassword, "the verifier reports the wrong password clearly");
+
+                var verified = new BackupVerifier().Verify(encryptedArchives[0].FullPath, true, password);
+                Check(verified.Valid, "the encrypted backup verifies with its password: " + verified.Error);
+                Check(verified.Encrypted, "verification reports the archive as encrypted");
+                Check(verified.CheckedDatabases == 1, "the encrypted backup contains the database");
+
+                var manifest = BackupCatalog.ReadManifest(encryptedArchives[0].FullPath, out var manifestError, password);
+                Check(manifest != null, "the encrypted manifest can be read with the password: " + manifestError);
+                Check(manifest != null && manifest.Databases.Any(d => d.Path == "data/library.db"),
+                    "the decrypted manifest lists the database");
+                Check(BackupCatalog.ReadManifest(encryptedArchives[0].FullPath, out _) == null,
+                    "the encrypted manifest cannot be read without the password");
+
+                Thread.Sleep(1100);
+                var second = RunBackup(source, pluginData, destination, 1, CancellationToken.None, password);
+                Check(second.Success, "a second encrypted backup succeeds: " + second.Error);
+                var remaining = BackupCatalog.List(destination).Where(a => a.Encrypted).ToList();
+                Check(remaining.Count == 1, "retention keeps one encrypted backup");
+                Check(remaining[0].FileName == Path.GetFileName(second.ArchivePath),
+                    "retention keeps the newest encrypted backup");
+            }
+            finally
+            {
+                try
+                {
+                    if (Directory.Exists(root))
+                    {
+                        Directory.Delete(root, true);
+                    }
+                }
+                catch
+                {
+                    // Best effort.
+                }
+            }
+        }
+
+        private static void ZipChecks()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "embybackup-zip-tests", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var payload = new byte[300 * 1024 + 7];
+                new Random(42).NextBytes(payload);
+                var text = Encoding.UTF8.GetBytes("Hola, Emby Backup. Acentos: áéíóú ñ.");
+                var stamp = new DateTime(2026, 10, 28, 12, 34, 56, DateTimeKind.Utc);
+
+                var archivePath = Path.Combine(root, "aes.zip");
+                using (var writer = new AesZipWriter(archivePath, "s3cret", root))
+                {
+                    using (var input = new MemoryStream(payload, false))
+                    {
+                        var result = writer.AddEntry("data/big.bin", stamp, input, CompressionLevel.Optimal,
+                            CancellationToken.None);
+                        Check(result.PlainBytes == payload.Length, "AES writer reports the plaintext size");
+                        Check(result.Sha256 == BackupFormat.Sha256(
+                                System.Security.Cryptography.SHA256.Create().ComputeHash(payload)),
+                            "AES writer reports the plaintext SHA-256");
+                    }
+
+                    writer.AddBytes("config/system.xml", stamp, text, CompressionLevel.Optimal,
+                        CancellationToken.None);
+                    writer.AddBytes("data/empty.txt", stamp, new byte[0], CompressionLevel.NoCompression,
+                        CancellationToken.None);
+                    writer.Complete();
+                }
+
+                Check(File.Exists(archivePath), "AES writer creates the archive");
+                bool encrypted;
+                string inspectError;
+                Check(ZipReader.TryInspect(archivePath, out encrypted, out inspectError) && encrypted,
+                    "the reader recognizes the AES archive: " + inspectError);
+
+                using (var reader = new ZipReader(archivePath))
+                {
+                    Check(reader.IsEncrypted, "the reader reports the archive as encrypted");
+                    Check(reader.Entries.Count == 3, "the reader lists every AES entry");
+                    Check(reader.Find("data/big.bin") != null, "the reader finds entries by name");
+
+                    var big = reader.ReadAllBytes(reader.Find("data/big.bin"), "s3cret", 1024 * 1024);
+                    Check(big.SequenceEqual(payload), "AES round-trip returns the exact plaintext");
+                    var xml = reader.ReadAllBytes(reader.Find("config/system.xml"), "s3cret", 1024 * 1024);
+                    Check(xml.SequenceEqual(text), "AES round-trip keeps UTF-8 names and content");
+                    var empty = reader.ReadAllBytes(reader.Find("data/empty.txt"), "s3cret", 1024 * 1024);
+                    Check(empty.Length == 0, "an empty stored entry round-trips");
+
+                    CheckThrows(() => reader.ReadAllBytes(reader.Find("data/big.bin"), null, 1024 * 1024),
+                        "reading an encrypted entry without a password is refused");
+                    CheckThrows(() => reader.ReadAllBytes(reader.Find("data/big.bin"), "wrong", 1024 * 1024),
+                        "reading an encrypted entry with a wrong password is refused");
+                }
+
+                // Corrupt one ciphertext byte: the HMAC must reject the entry even if deflate still
+                // manages to produce some output.
+                var tamperedPath = Path.Combine(root, "tampered.zip");
+                File.Copy(archivePath, tamperedPath);
+                long tamperOffset;
+                using (var reader = new ZipReader(tamperedPath))
+                {
+                    var entry = reader.Find("data/big.bin");
+                    using (var file = new FileStream(tamperedPath, FileMode.Open, FileAccess.Read))
+                    {
+                        file.Seek(entry.LocalHeaderOffset, SeekOrigin.Begin);
+                        var header = new byte[30];
+                        file.Read(header, 0, header.Length);
+                        var nameLength = ZipEncryption.ReadUInt16(header, 26);
+                        var extraLength = ZipEncryption.ReadUInt16(header, 28);
+                        tamperOffset = entry.LocalHeaderOffset + 30 + nameLength + extraLength
+                            + ZipEncryption.SaltLength + ZipEncryption.PasswordVerifierLength + 100;
+                    }
+                }
+                using (var file = new FileStream(tamperedPath, FileMode.Open, FileAccess.ReadWrite))
+                {
+                    file.Seek(tamperOffset, SeekOrigin.Begin);
+                    var value = file.ReadByte();
+                    file.Seek(tamperOffset, SeekOrigin.Begin);
+                    file.WriteByte((byte)(value ^ 0x5A));
+                }
+                CheckThrows(() =>
+                    {
+                        using (var reader = new ZipReader(tamperedPath))
+                        {
+                            reader.ReadAllBytes(reader.Find("data/big.bin"), "s3cret", 1024 * 1024);
+                        }
+                    },
+                    "a modified AES ciphertext fails authentication");
+
+                var sevenZip = FindSevenZip();
+                if (sevenZip == null)
+                {
+                    Console.WriteLine("SKIP  7-Zip interoperability checks (7z not installed)");
+                    return;
+                }
+
+                var test = RunProcess(sevenZip, "t -p" + "s3cret \"" + archivePath + "\"", root);
+                Check(test.ExitCode == 0, "7-Zip validates the archive we created: " + test.Output.Trim());
+
+                var plainName = "interop.txt";
+                File.WriteAllBytes(Path.Combine(root, plainName), payload);
+                var sevenArchive = Path.Combine(root, "seven.zip");
+                var create = RunProcess(
+                    sevenZip,
+                    "a -tzip -mem=AES256 -p" + "sevenpass \"" + sevenArchive + "\" \"" + plainName + "\"",
+                    root);
+                Check(create.ExitCode == 0, "7-Zip creates an AES archive: " + create.Output.Trim());
+
+                using (var reader = new ZipReader(sevenArchive))
+                {
+                    Check(reader.IsEncrypted, "the reader recognizes an archive created by 7-Zip");
+                    var data = reader.ReadAllBytes(reader.Find(plainName), "sevenpass", 2 * 1024 * 1024);
+                    Check(data.SequenceEqual(payload), "the reader decrypts an archive created by 7-Zip");
+                    CheckThrows(() => reader.ReadAllBytes(reader.Find(plainName), "nope", 2 * 1024 * 1024),
+                        "a 7-Zip archive with a wrong password is refused");
+                }
+
+                // A normal, unencrypted ZIP produced by .NET must also be readable by the same reader.
+                var plainZip = Path.Combine(root, "plain.zip");
+                using (var output = new FileStream(plainZip, FileMode.Create, FileAccess.Write))
+                using (var archive = new ZipArchive(output, ZipArchiveMode.Create))
+                {
+                    var entry = archive.CreateEntry("config/system.xml", CompressionLevel.Optimal);
+                    using (var stream = entry.Open())
+                    {
+                        stream.Write(text, 0, text.Length);
+                    }
+                }
+                using (var reader = new ZipReader(plainZip))
+                {
+                    Check(!reader.IsEncrypted, "a normal ZIP is not reported as encrypted");
+                    var data = reader.ReadAllBytes(reader.Find("config/system.xml"), null, 1024 * 1024);
+                    Check(data.SequenceEqual(text), "the reader also reads unencrypted ZIPs");
+                }
+            }
+            finally
+            {
+                try
+                {
+                    if (Directory.Exists(root))
+                    {
+                        Directory.Delete(root, true);
+                    }
+                }
+                catch
+                {
+                    // Best effort.
+                }
+            }
+        }
+
+        private static string FindSevenZip()
+        {
+            foreach (var candidate in new[] { "7z", "/usr/bin/7z", "/usr/local/bin/7z" })
+            {
+                try
+                {
+                    var result = RunProcess(candidate, "", Path.GetTempPath());
+                    if (result.ExitCode == 0 || result.Output.Length > 0)
+                    {
+                        return candidate;
+                    }
+                }
+                catch
+                {
+                    // Try the next candidate.
+                }
+            }
+            return null;
+        }
+
+        private static ProcessResult RunProcess(string fileName, string arguments, string workingDirectory)
+        {
+            var info = new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                WorkingDirectory = workingDirectory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using (var process = Process.Start(info))
+            {
+                var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+                process.WaitForExit();
+                return new ProcessResult { ExitCode = process.ExitCode, Output = output };
+            }
+        }
+
+        private sealed class ProcessResult
+        {
+            public int ExitCode { get; set; }
+            public string Output { get; set; }
         }
 
         private static void ScheduleRuleChecks()
@@ -350,7 +822,8 @@ namespace EmbyBackup.Tests
             string pluginData,
             string destination,
             int retention,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string password = null)
         {
             var logs = new List<string>();
             var request = new BackupRequest
@@ -368,6 +841,7 @@ namespace EmbyBackup.Tests
                 RetentionCount = retention,
                 BusyTimeoutSeconds = 10,
                 VerifyAfterCreate = true,
+                Password = password,
                 Log = logs.Add,
                 Progress = (percent, message) => { },
             };

@@ -45,6 +45,30 @@ namespace EmbyBackup
     public class BackupVerifyRequest : IReturn<BackupVerifyView>
     {
         public string FileName { get; set; }
+        public string Password { get; set; }
+    }
+
+    [Route("/EmbyBackup/RestoreCheck", "POST", Summary = "Check a backup archive and its password before restoring it")]
+    [Authenticated(Roles = "Admin")]
+    public class RestoreCheckRequest : IReturn<RestoreCheckView>
+    {
+        public string FileName { get; set; }
+        public string Password { get; set; }
+    }
+
+    [Route("/EmbyBackup/Restore", "POST", Summary = "Restore a backup into Emby's program data folder")]
+    [Authenticated(Roles = "Admin")]
+    public class RestoreStartRequest : IReturn<RestoreStartView>
+    {
+        public string FileName { get; set; }
+        public string Password { get; set; }
+        public bool Confirm { get; set; }
+    }
+
+    [Route("/EmbyBackup/RestoreStatus", "GET", Summary = "Current restore state")]
+    [Authenticated(Roles = "Admin")]
+    public class RestoreStatusRequest : IReturn<RestoreStatusView>
+    {
     }
 
     [Route("/EmbyBackup/TestDestination", "POST", Summary = "Check that the configured destination is reachable and writable")]
@@ -70,9 +94,11 @@ namespace EmbyBackup
         public string FinishedUtc { get; set; }
         public List<string> Warnings { get; set; } = new List<string>();
         public BackupRecordView Last { get; set; }
+        public RestoreStatusView Restore { get; set; }
         public string DestinationPath { get; set; }
         public string DestinationType { get; set; }
         public bool ScheduledBackupsEnabled { get; set; }
+        public bool ProtectBackupsWithPassword { get; set; }
         public string PluginVersion { get; set; }
     }
 
@@ -91,6 +117,7 @@ namespace EmbyBackup
         public string Status { get; set; }
         public string Origin { get; set; }
         public bool Verified { get; set; }
+        public bool Encrypted { get; set; }
         public long Bytes { get; set; }
         public int FileCount { get; set; }
         public int DatabaseCount { get; set; }
@@ -116,6 +143,8 @@ namespace EmbyBackup
         public string LastWriteUtc { get; set; }
         public bool HasManifest { get; set; }
         public bool IsEmbyBackup { get; set; }
+        public bool Encrypted { get; set; }
+        public bool EncryptedKnown { get; set; }
         public bool HasChecksumFile { get; set; }
         public bool MetadataKnown { get; set; }
         public int FileCount { get; set; }
@@ -127,6 +156,9 @@ namespace EmbyBackup
     public class BackupVerifyView
     {
         public bool Valid { get; set; }
+        public bool Encrypted { get; set; }
+        public bool PasswordRequired { get; set; }
+        public bool WrongPassword { get; set; }
         public string Error { get; set; }
         public int CheckedFiles { get; set; }
         public int CheckedDatabases { get; set; }
@@ -135,6 +167,50 @@ namespace EmbyBackup
         public string PluginVersion { get; set; }
         public string SourceProgramDataPath { get; set; }
         public long TotalBytes { get; set; }
+    }
+
+    public class RestoreCheckView
+    {
+        public bool Success { get; set; }
+        public bool Valid { get; set; }
+        public bool Encrypted { get; set; }
+        public bool PasswordRequired { get; set; }
+        public bool WrongPassword { get; set; }
+        public string Error { get; set; }
+        public string FileName { get; set; }
+        public string CreatedUtc { get; set; }
+        public string EmbyVersion { get; set; }
+        public string PluginVersion { get; set; }
+        public string SourceProgramDataPath { get; set; }
+        public int FileCount { get; set; }
+        public int DatabaseCount { get; set; }
+        public long TotalBytes { get; set; }
+    }
+
+    public class RestoreStatusView
+    {
+        public bool Running { get; set; }
+        public string State { get; set; }
+        public double Progress { get; set; }
+        public string Message { get; set; }
+        public string StartedUtc { get; set; }
+        public string FinishedUtc { get; set; }
+        public string FileName { get; set; }
+        public string Error { get; set; }
+        public bool Applied { get; set; }
+        public bool RestartRequired { get; set; }
+        public bool PasswordRequired { get; set; }
+        public bool WrongPassword { get; set; }
+        public int RestoredFiles { get; set; }
+        public int RestoredDatabases { get; set; }
+        public List<string> Warnings { get; set; } = new List<string>();
+    }
+
+    public class RestoreStartView
+    {
+        public bool Started { get; set; }
+        public string Message { get; set; }
+        public RestoreStatusView Status { get; set; }
     }
 
     public class BackupApi : IService
@@ -237,8 +313,11 @@ namespace EmbyBackup
             {
                 destination = BackupRuntime.CreateDestination(message => _logger.Info(message));
                 localPath = destination.Fetch(request.FileName, "verify");
-                var verification = new BackupVerifier().Verify(localPath, true);
+                var verification = new BackupVerifier().Verify(localPath, true, request.Password);
                 view.Valid = verification.Valid;
+                view.Encrypted = verification.Encrypted;
+                view.PasswordRequired = verification.PasswordRequired;
+                view.WrongPassword = verification.WrongPassword;
                 view.Error = verification.Error;
                 view.CheckedFiles = verification.CheckedFiles;
                 view.CheckedDatabases = verification.CheckedDatabases;
@@ -267,6 +346,86 @@ namespace EmbyBackup
             }
 
             return view;
+        }
+
+        public object Post(RestoreCheckRequest request)
+        {
+            var settings = BackupRuntime.GetDestinationSettings();
+            if (!settings.IsConfigured)
+            {
+                return new RestoreCheckView
+                {
+                    Success = false,
+                    Error = "No backup destination is configured.",
+                    FileName = request == null ? null : request.FileName,
+                };
+            }
+
+            var plugin = Plugin.Instance;
+            var configuration = plugin == null ? null : plugin.Configuration;
+            if (configuration != null)
+            {
+                configuration.Normalize();
+            }
+
+            var restore = new RestoreRequest
+            {
+                ProgramDataPath = BackupRuntime.ProgramDataPath,
+                PluginDataPath = BackupRuntime.PluginDataPath,
+                Destination = settings,
+                FileName = request == null ? null : request.FileName,
+                Password = request == null ? null : request.Password,
+                BusyTimeoutSeconds = configuration == null ? 60 : configuration.BusyTimeoutSeconds,
+                Log = message => _logger.Info(message),
+            };
+
+            var check = new RestoreService(
+                configuration == null ? 60 : configuration.BusyTimeoutSeconds,
+                message => _logger.Info(message)).Check(restore);
+
+            return new RestoreCheckView
+            {
+                Success = check.Success,
+                Valid = check.Valid,
+                Encrypted = check.Encrypted,
+                PasswordRequired = check.PasswordRequired,
+                WrongPassword = check.WrongPassword,
+                Error = check.Error,
+                FileName = check.FileName,
+                CreatedUtc = check.CreatedUtc,
+                EmbyVersion = check.EmbyVersion,
+                PluginVersion = check.PluginVersion,
+                SourceProgramDataPath = check.SourceProgramDataPath,
+                FileCount = check.FileCount,
+                DatabaseCount = check.DatabaseCount,
+                TotalBytes = check.TotalBytes,
+            };
+        }
+
+        public object Post(RestoreStartRequest request)
+        {
+            if (request == null || !request.Confirm)
+            {
+                return new RestoreStartView
+                {
+                    Started = false,
+                    Message = "The restore was not confirmed.",
+                    Status = MapRestore(RestoreRuntime.GetStatus()),
+                };
+            }
+
+            var start = RestoreRuntime.Start(_logger, request.FileName, request.Password);
+            return new RestoreStartView
+            {
+                Started = start.Started,
+                Message = start.Message,
+                Status = MapRestore(start.Status),
+            };
+        }
+
+        public object Get(RestoreStatusRequest request)
+        {
+            return MapRestore(RestoreRuntime.GetStatus());
         }
 
         public object Post(BackupTestRequest request)
@@ -318,11 +477,13 @@ namespace EmbyBackup
                 FinishedUtc = status.FinishedUtc,
                 Warnings = status.Warnings,
                 Last = last == null ? null : Map(last),
+                Restore = MapRestore(RestoreRuntime.GetStatus()),
                 DestinationPath = destination.Location,
                 DestinationType = destination.NormalizedType,
                 ScheduledBackupsEnabled = plugin != null && plugin.Configuration.ScheduledBackupsEnabled,
+                ProtectBackupsWithPassword = plugin != null && plugin.Configuration.ProtectBackupsWithPassword,
                 PluginVersion = typeof(Plugin).Assembly.GetName().Version == null
-                    ? "1.3.0"
+                    ? "1.4.0"
                     : typeof(Plugin).Assembly.GetName().Version.ToString(),
             };
         }
@@ -366,6 +527,8 @@ namespace EmbyBackup
                                 LastWriteUtc = BackupFormat.Utc(info.LastWriteUtc),
                                 HasManifest = info.HasManifest,
                                 IsEmbyBackup = info.IsEmbyBackup,
+                                Encrypted = info.Encrypted,
+                                EncryptedKnown = true,
                                 HasChecksumFile = info.HasChecksumFile,
                                 MetadataKnown = true,
                                 FileCount = info.FileCount,
@@ -392,6 +555,8 @@ namespace EmbyBackup
                                     : BackupFormat.Utc(file.ModifiedUtc),
                                 HasManifest = false,
                                 IsEmbyBackup = false,
+                                Encrypted = false,
+                                EncryptedKnown = false,
                                 HasChecksumFile = file.HasSidecar,
                                 MetadataKnown = false,
                             })
@@ -419,6 +584,7 @@ namespace EmbyBackup
                     ? "scheduled"
                     : "manual",
                 Verified = record.Verified,
+                Encrypted = record.Encrypted,
                 Bytes = record.Bytes,
                 FileCount = record.FileCount,
                 DatabaseCount = record.DatabaseCount,
@@ -426,6 +592,33 @@ namespace EmbyBackup
                 DurationSeconds = record.DurationSeconds,
                 Error = record.Error,
                 Warnings = record.Warnings == null ? new List<string>() : record.Warnings,
+            };
+        }
+
+        private static RestoreStatusView MapRestore(RestoreRuntimeStatus status)
+        {
+            if (status == null)
+            {
+                return new RestoreStatusView();
+            }
+
+            return new RestoreStatusView
+            {
+                Running = status.Running,
+                State = status.State,
+                Progress = status.Progress,
+                Message = status.Message,
+                StartedUtc = status.StartedUtc,
+                FinishedUtc = status.FinishedUtc,
+                FileName = status.FileName,
+                Error = status.Error,
+                Applied = status.Applied,
+                RestartRequired = status.RestartRequired,
+                PasswordRequired = status.PasswordRequired,
+                WrongPassword = status.WrongPassword,
+                RestoredFiles = status.RestoredFiles,
+                RestoredDatabases = status.RestoredDatabases,
+                Warnings = status.Warnings == null ? new List<string>() : status.Warnings,
             };
         }
     }

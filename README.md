@@ -13,6 +13,8 @@ La versión lista para instalar está en [Releases](https://github.com/ratopro/e
 
 ## Versiones
 
+- **1.4.0**: protección opcional de las copias con contraseña (**AES-256** al estilo WinZip) y
+  **restauración desde la página**, con verificación previa, doble confirmación y reinicio al terminar.
 - **1.3.0**: programación configurable de las copias automáticas (**cada día**, **cada dos días**,
   **semanal** o **mensual**) y hora de inicio, con el origen (*Manual* / *Automatic*) en el historial.
 - **1.2.0**: destino seleccionable **Local**, **red SMB** o **FTP/FTPS**, con *Test destination* y
@@ -83,6 +85,8 @@ incluye en `system/`.
 | **Start time** | Hora local del servidor (`HH:mm`) a la que empieza la copia automática. |
 | **Run automatic backups** | Activa o desactiva la tarea programada; las copias manuales siguen disponibles. |
 | **Verify the archive after creating it** | Relee el ZIP y compara todos los SHA-256. |
+| **Protect new backups with a password (AES-256)** | Cifra las copias nuevas (manuales y programadas) con la contraseña indicada, usando AES-256 (WinZip AE-2). Las copias existentes conservan su contraseña. |
+| **Backup password** | Contraseña que se aplica a las copias nuevas. Sin ella, una copia protegida no se puede verificar ni restaurar. |
 | **Test destination** | Guarda los ajustes y comprueba que el destino existe y admite escritura, sin lanzar una copia. |
 
 Ejemplos de destino:
@@ -148,10 +152,28 @@ tareas de Emby.
 
 ### Credenciales
 
-Las contraseñas de red y FTP se guardan **en texto plano** en
+Las contraseñas de red, FTP y la contraseña opcional de las copias se guardan **en texto plano** en
 `plugins/configurations/EmbyBackup.xml`, igual que el resto de ajustes del plugin. Cualquiera con acceso
 de lectura a ese fichero o a la copia de seguridad puede leerlas. Usa una cuenta dedicada con permiso
 solo sobre la carpeta de copias y no reutilices la contraseña de un administrador.
+
+La contraseña de la copia **no se guarda dentro del ZIP**: protege el archivo con AES-256, pero si la
+olvidas no hay forma de recuperar el contenido. Anótala en un lugar seguro. Para crear copias sin
+contraseña, desmarca la protección; las copias que ya estaban cifradas conservan su contraseña.
+
+### Protección con contraseña (AES-256)
+
+Al marcar **Protect new backups with a password** y escribir una contraseña, las copias nuevas se cifran
+con **AES-256** (formato WinZip AE-2, compatible con 7-Zip, WinRAR y WinZip). El contenido del ZIP —
+incluido `manifest.json`— queda cifrado y autenticado con HMAC-SHA1, así que no se puede leer ni
+modificar sin la contraseña.
+
+- **Verificar** una copia protegida pide la contraseña; con una contraseña incorrecta devuelve un error
+  claro en lugar de un fallo genérico.
+- **Restaurar** una copia protegida pide la contraseña antes de continuar.
+- La retención sigue reconociendo las copias cifradas como propias mediante el `.sha256` (el manifiesto
+  no se puede leer sin la contraseña).
+- Puedes abrir la copia a mano con `7z x archivo.zip -p<contraseña>`.
 
 ### Explorador de carpetas
 
@@ -211,7 +233,8 @@ la ruta, la cuenta que ejecuta Emby y una sugerencia concreta.
 ### Copia manual
 
 El botón **Run backup now** lanza la copia en segundo plano. La página muestra progreso, mensaje,
-historial y los archivos del destino, y permite **Cancel**. Solo puede haber una copia a la vez.
+historial y los archivos del destino, y permite **Cancel**. Solo puede haber una copia a la vez (manual,
+programada o restauración).
 
 ### API
 
@@ -225,10 +248,15 @@ Todas las rutas requieren un token de administrador:
 | `POST` | `/EmbyBackup/Run` |
 | `POST` | `/EmbyBackup/Cancel` |
 | `POST` | `/EmbyBackup/TestDestination` |
-| `POST` | `/EmbyBackup/Verify` (`{"FileName":"..."}`) |
+| `POST` | `/EmbyBackup/Verify` (`{"FileName":"...", "Password":"..."}`) |
+| `POST` | `/EmbyBackup/RestoreCheck` (`{"FileName":"...", "Password":"..."}`) |
+| `POST` | `/EmbyBackup/Restore` (`{"FileName":"...", "Password":"...", "Confirm":true}`) |
+| `GET` | `/EmbyBackup/RestoreStatus` |
 
 Cada entrada de `/EmbyBackup/History` incluye `Origin` (`manual` o `scheduled`), que es lo que muestra
-la columna *Started by*.
+la columna *Started by*, y `Encrypted` (copia protegida con contraseña). `/EmbyBackup/Files` incluye
+`Encrypted` y `EncryptedKnown` para cada archivo. `/EmbyBackup/Status` incluye el estado de la
+restauración en `Restore`.
 
 ## Qué se crea en el destino
 
@@ -243,13 +271,16 @@ emby-backup-20261028-112343Z.zip.sha256
 - `manifest.json` contiene versión del formato, versión del plugin y de Emby, sistema operativo, fecha,
   ruta de origen, compresión, lista de bases con `quick_check`, inventario de ficheros con SHA-256 y
   tamaños, exclusiones y advertencias.
+- Si la protección está activa, el ZIP se cifra con AES-256 y `manifest.json` queda cifrado también; en
+  ese caso el inventario no se puede leer sin la contraseña.
 - El `.sha256` es el hash del ZIP completo, en el formato habitual de `sha256sum`.
 - El ZIP no crea una carpeta raíz: su contenido se corresponde con la raíz del Data Folder.
 
 La retención solo borra ZIP reconocidos por su manifiesto (`format: emby-server-backup`) y sus
 `.sha256`. En FTP, donde leer el manifiesto obligaría a descargar cada ZIP, se acepta un `.sha256`
-válido como prueba de propiedad. Nunca toca otros ficheros del destino. Los `.partial` con más de
-24 horas también se eliminan.
+válido como prueba de propiedad. Las copias cifradas se reconocen por el `.sha256` válido más el
+contenedor AES. Nunca toca otros ficheros del destino. Los `.partial` con más de 24 horas también se
+eliminan.
 
 ## Verificación
 
@@ -262,7 +293,8 @@ con el botón **Verify**. Comprueba:
 - Las rutas no escapan del directorio de restauración.
 - El `.sha256` coincide con el ZIP.
 
-En FTP la verificación descarga primero el ZIP a una carpeta temporal y la borra al terminar.
+En FTP la verificación descarga primero el ZIP a una carpeta temporal y la borra al terminar. Si la copia
+está protegida, la verificación pide la contraseña; con una contraseña incorrecta lo indica claramente.
 
 También puedes verificarlo a mano:
 
@@ -271,9 +303,37 @@ sha256sum -c emby-backup-20261028-112343Z.zip.sha256
 unzip -p emby-backup-20261028-112343Z.zip manifest.json | head
 ```
 
-## Restauración (manual)
+Si la copia está cifrada, `unzip` te pedirá la contraseña (o usa `7z x -p`).
 
-El plugin no restaura: restaurar sustituye el estado del servidor y debe hacerse con Emby detenido.
+## Restauración
+
+### Desde la página
+
+En *Panel → Plugins → Emby Backup* hay una tarjeta **Restore from a backup**. Elige el archivo de la
+lista (leída del destino configurado) y pulsa **Restore selected backup...**:
+
+1. Si la copia está protegida, se pide la contraseña; con una contraseña incorrecta se vuelve a pedir.
+2. Se muestra un resumen del archivo (fecha, versión de Emby, contenido) y se pide **dos confirmaciones**
+   antes de tocar nada.
+3. El plugin descarga el ZIP, lo extrae y **verifica todos los SHA-256** en una carpeta temporal antes de
+   escribir en el Data Folder; si algo falla, no se modifica nada.
+4. Aplica los ficheros y las bases de datos con la SQLite Online Backup API (Emby sigue corriendo), y al
+   terminar pide **restart Emby** para cargar los datos restaurados.
+
+Detalles importantes:
+
+- La restauración comparte el bloqueo con las copias: solo puede haber una operación (copia o
+  restauración) a la vez.
+- Se conserva la configuración actual del plugin (`plugins/configurations/EmbyBackup.xml`): el destino y
+  las credenciales no se pisan, para no perder el acceso a las copias.
+- No se borran los ficheros creados **después** de la copia; solo se reemplazan los que estaban en ella.
+- Emby **debe reiniciarse** al terminar para recargar configuración y cachés.
+- La restauración funciona en una instalación nueva (Emby reinstalado + plugin instalado + destino
+  configurado): recupera toda la información contenida en el archivo.
+
+### Manual (sin el plugin o como último recurso)
+
+Si prefieres restaurar a mano, detén Emby y extrae el ZIP directamente:
 
 1. **Detén Emby**.
 2. Haz una copia del Data Folder actual por si acaso.
@@ -285,8 +345,9 @@ El plugin no restaura: restaurar sustituye el estado del servidor y debe hacerse
    unzip /mnt/backups/emby/emby-backup-20261028-112343Z.zip
    ```
 
-   En Windows, con el Data Folder en `%APPDATA%\Emby-Server\programdata`, extrae ahí el contenido del
-   ZIP (por ejemplo con el Explorador: *Extraer todo* → esa carpeta).
+   Si la copia está cifrada, `unzip` pide la contraseña (o usa `7z x -p`). En Windows, con el Data
+   Folder en `%APPDATA%\Emby-Server\programdata`, extrae ahí el contenido del ZIP (por ejemplo con el
+   Explorador: *Extraer todo* → esa carpeta).
 5. Ajusta propietario y permisos al usuario de Emby:
 
    ```bash
@@ -314,11 +375,14 @@ dotnet run -c Release --project tests/EmbyBackup.Tests
 
 El resultado es `src/EmbyBackup/bin/Release/netstandard2.0/EmbyBackup.dll`.
 
-Las 95 pruebas del motor cubren: WAL real con la backup API, snapshots, ZIP, manifiesto, sidecar,
+Las 157 pruebas del motor cubren: WAL real con la backup API, snapshots, ZIP, manifiesto, sidecar,
 verificación, retención segura local y remota, archivos ajenos, cancelación, path traversal, destino
 dentro del Data Folder, archivos corruptos, exclusión de binarios y de metadatos, validación de los
-tres tipos de destino, análisis de listados FTP (Unix e IIS) y las reglas de programación (periodos,
-horas, días de la semana y decisión de vencimiento).
+tres tipos de destino, análisis de listados FTP (Unix e IIS), las reglas de programación (periodos,
+horas, días de la semana y decisión de vencimiento), el cifrado AES-256 (ida y vuelta, contraseña
+ausente o incorrecta, manipulación del contenido e interoperabilidad con 7-Zip en ambos sentidos) y la
+restauración completa (extracción y verificación en staging, bases de datos restauradas con la API
+online, conservación de los ajustes actuales, ficheros posteriores y rechazo de path traversal).
 
 ## Estructura
 
@@ -329,10 +393,14 @@ src/EmbyBackup/
   BackupSchedule.cs         Construcción y aplicación del trigger de Emby
   BackupApi.cs              Rutas REST administrativas
   BackupRuntime.cs          Estado compartido y ejecución en segundo plano
+  RestoreRuntime.cs         Estado y ejecución de la restauración en segundo plano
   PluginConfiguration.cs    Ajustes persistidos en plugins/configurations/EmbyBackup.xml
   Core/                     Motor independiente de Emby (probado aparte)
   Core/BackupDestinations.cs    Destinos Local, red y FTP/FTPS
   Core/BackupScheduleRules.cs   Reglas puras de periodo, hora y día
+  Core/ZipEncryption.cs         Escritor ZIP AES-256 (WinZip AE-2) y primitivas
+  Core/ZipReader.cs             Lector ZIP, descifrado y detección de cifrado
+  Core/RestoreService.cs        Comprobación y ejecución de la restauración
   Web/                      Página de configuración (HTML + JS)
   Images/thumb.png          Miniatura
 tests/EmbyBackup.Tests/     Pruebas del motor
@@ -342,7 +410,7 @@ GUID del plugin: `5a3c44fa-8c66-4f07-b75e-4a8c6123852f`.
 
 ## Limitaciones conocidas
 
-- Solo se ejecuta una copia a la vez (manual o programada).
+- Solo se ejecuta una operación a la vez (copia manual, copia programada o restauración).
 - Emby no recupera una tarea diaria o semanal perdida mientras el servidor estaba apagado. Las
   periodicidades «cada dos días» y «mensual» sí se recuperan al día siguiente porque se comprueban en
   cada ejecución diaria; la semanal no.
@@ -354,6 +422,10 @@ GUID del plugin: `5a3c44fa-8c66-4f07-b75e-4a8c6123852f`.
   credenciales SMB solo se usan en Windows.
 - FTP es síncrono y sin reanudación: si se corta la conexión, la copia falla y el `.partial` se limpia
   en la siguiente ejecución. Para archivos muy grandes, valora un destino local o una unidad montada.
+- La contraseña de las copias se guarda en texto plano en la configuración del plugin. No se puede
+  recuperar el contenido de una copia cifrada si se olvida la contraseña.
+- La restauración no deshace cambios: solo reemplaza los ficheros presentes en la copia y conserva los
+  creados después. Requiere reiniciar Emby al terminar.
 
 ## Licencia
 

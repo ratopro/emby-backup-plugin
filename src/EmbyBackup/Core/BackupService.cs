@@ -148,6 +148,8 @@ namespace EmbyBackup.Core
                     sources,
                     inventory.ExcludedPaths.Concat(exclusions),
                     warnings,
+                    request.Password,
+                    workDirectory,
                     cancellationToken);
 
                 warnings = build.Manifest.Warnings == null
@@ -157,7 +159,7 @@ namespace EmbyBackup.Core
                 if (request.VerifyAfterCreate)
                 {
                     progress(90, "Verifying archive");
-                    var verification = _verifier.Verify(build.ArchivePath, false);
+                    var verification = _verifier.Verify(build.ArchivePath, false, request.Password);
                     if (!verification.Valid)
                     {
                         throw new InvalidDataException("The new archive did not pass verification: " + verification.Error);
@@ -178,6 +180,7 @@ namespace EmbyBackup.Core
                 }
 
                 result.Success = true;
+                result.Encrypted = build.Encrypted;
                 result.ArchivePath = commit.Location;
                 result.Sha256 = build.Sha256;
                 result.Bytes = build.Bytes;
@@ -255,6 +258,7 @@ namespace EmbyBackup.Core
                     Origin = string.Equals(request.Origin, "scheduled", StringComparison.OrdinalIgnoreCase)
                         ? "scheduled"
                         : "manual",
+                    Encrypted = result.Encrypted,
                 };
 
                 BackupHistoryStore.Append(request.PluginDataPath, record);

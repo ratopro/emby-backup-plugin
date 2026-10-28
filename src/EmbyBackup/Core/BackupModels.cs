@@ -203,6 +203,10 @@ namespace EmbyBackup.Core
         /// <summary>"manual" or "scheduled". Older history entries have no value and are treated as manual.</summary>
         [DataMember(Name = "origin", Order = 13)]
         public string Origin { get; set; }
+
+        /// <summary>True when the archive is protected with a password (WinZip AES-256).</summary>
+        [DataMember(Name = "encrypted", Order = 14, EmitDefaultValue = false)]
+        public bool Encrypted { get; set; }
     }
 
     public sealed class BackupRequest
@@ -217,6 +221,8 @@ namespace EmbyBackup.Core
         public int RetentionCount { get; set; }
         public int BusyTimeoutSeconds { get; set; }
         public bool VerifyAfterCreate { get; set; }
+        /// <summary>When set, the archive is encrypted with this password (WinZip AES-256).</summary>
+        public string Password { get; set; }
         public Action<string> Log { get; set; }
         public Action<double, string> Progress { get; set; }
     }
@@ -225,6 +231,7 @@ namespace EmbyBackup.Core
     {
         public bool Success { get; set; }
         public bool Verified { get; set; }
+        public bool Encrypted { get; set; }
         public string ArchivePath { get; set; }
         public string Sha256 { get; set; }
         public long Bytes { get; set; }

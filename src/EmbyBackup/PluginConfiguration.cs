@@ -80,6 +80,17 @@ namespace EmbyBackup
         public bool VerifyAfterCreate { get; set; } = true;
 
         /// <summary>
+        /// Encrypts new archives (manual and scheduled) with <see cref="BackupPassword"/>.
+        /// </summary>
+        public bool ProtectBackupsWithPassword { get; set; }
+
+        /// <summary>
+        /// Password used for new archives. Like the network and FTP passwords, it is stored in this XML
+        /// file as plain text. An existing archive keeps the password it was created with.
+        /// </summary>
+        public string BackupPassword { get; set; } = string.Empty;
+
+        /// <summary>
         /// How long to wait for a database lock held by Emby before giving up.
         /// </summary>
         public int BusyTimeoutSeconds { get; set; } = 60;
@@ -105,6 +116,7 @@ namespace EmbyBackup
 
             RetentionCount = Math.Max(1, Math.Min(365, RetentionCount));
             BusyTimeoutSeconds = Math.Max(5, Math.Min(600, BusyTimeoutSeconds));
+            BackupPassword = BackupPassword ?? string.Empty;
 
             if (!string.Equals(Compression, "Fastest", StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(Compression, "NoCompression", StringComparison.OrdinalIgnoreCase))
