@@ -698,6 +698,19 @@ namespace EmbyBackup.Tests
                     var data = reader.ReadAllBytes(reader.Find("config/system.xml"), null, 1024 * 1024);
                     Check(data.SequenceEqual(text), "the reader also reads unencrypted ZIPs");
                 }
+
+                // A forged EOCD used to make the reader allocate the central-directory size advertised by
+                // the archive. The reader must reject it before allocating attacker-controlled memory.
+                var oversizedDirectory = Path.Combine(root, "oversized-directory.zip");
+                var eocd = new byte[22];
+                ZipEncryption.WriteUInt32LittleEndian(eocd, 0, 0x06054b50);
+                ZipEncryption.WriteUInt32LittleEndian(eocd, 12, 0x10000000); // 256 MiB central directory.
+                File.WriteAllBytes(oversizedDirectory, eocd);
+                bool ignoredEncrypted;
+                string oversizedError;
+                Check(!ZipReader.TryInspect(oversizedDirectory, out ignoredEncrypted, out oversizedError)
+                    && oversizedError.IndexOf("central directory", StringComparison.OrdinalIgnoreCase) >= 0,
+                    "an oversized ZIP central directory is rejected before allocation");
             }
             finally
             {

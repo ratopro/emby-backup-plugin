@@ -38,7 +38,7 @@ namespace EmbyBackup
             BackupRuntime.Configure(
                 applicationPaths.ProgramDataPath,
                 Path.Combine(applicationPaths.PluginsPath, "EmbyBackup"),
-                assemblyVersion == null ? "1.4.0" : assemblyVersion.ToString());
+                assemblyVersion == null ? "1.4.1" : assemblyVersion.ToString());
         }
 
         public void Run()

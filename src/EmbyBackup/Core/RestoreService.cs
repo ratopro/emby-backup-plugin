@@ -62,6 +62,8 @@ namespace EmbyBackup.Core
     public sealed class RestoreService
     {
         private const string PluginConfigurationPath = "plugins/configurations/EmbyBackup.xml";
+        private const int MaximumRestoreEntries = 500000;
+        private const long MaximumRestoreBytes = 1024L * 1024 * 1024 * 1024;
 
         private readonly SqliteSnapshotService _sqlite;
 
@@ -216,6 +218,7 @@ namespace EmbyBackup.Core
 
                     manifest = ReadManifest(reader, request.Password);
                     ValidateManifest(manifest);
+                    EnsureStagingCapacity(stagingRoot, manifest.TotalBytes);
 
                     var expected = BuildExpectedEntries(manifest);
                     foreach (var entry in reader.Entries)
@@ -440,6 +443,36 @@ namespace EmbyBackup.Core
             {
                 throw new InvalidDataException("The backup does not contain any files or databases.");
             }
+
+            var fileCount = manifest.Files == null ? 0L : manifest.Files.Count;
+            var databaseCount = manifest.Databases == null ? 0L : manifest.Databases.Count;
+            if (fileCount + databaseCount > MaximumRestoreEntries)
+            {
+                throw new InvalidDataException("The backup contains too many entries to restore safely.");
+            }
+
+            var total = 0L;
+            foreach (var file in manifest.Files ?? new List<BackupFileEntry>())
+            {
+                ValidateManifestEntry(file == null ? null : file.Path, file == null ? -1 : file.Bytes,
+                    file == null ? null : file.Sha256);
+                total = CheckedAdd(total, file.Bytes);
+            }
+            foreach (var database in manifest.Databases ?? new List<BackupDatabaseEntry>())
+            {
+                ValidateManifestEntry(database == null ? null : database.Path,
+                    database == null ? -1 : database.Bytes, database == null ? null : database.Sha256);
+                total = CheckedAdd(total, database.Bytes);
+            }
+
+            if (manifest.TotalBytes != total)
+            {
+                throw new InvalidDataException("The manifest total size does not match its entries.");
+            }
+            if (total > MaximumRestoreBytes)
+            {
+                throw new InvalidDataException("The backup is larger than the safe restore limit (1 TiB).");
+            }
         }
 
         private static HashSet<string> BuildExpectedEntries(BackupManifest manifest)
@@ -556,6 +589,16 @@ namespace EmbyBackup.Core
             if (!string.IsNullOrEmpty(directory))
             {
                 Directory.CreateDirectory(directory);
+                if (PathSafety.IsReparsePoint(new DirectoryInfo(directory)))
+                {
+                    throw new InvalidDataException(
+                        "Refusing to restore into a symbolic link or junction: " + directory);
+                }
+            }
+
+            if (File.Exists(targetPath) && PathSafety.IsReparsePoint(new FileInfo(targetPath)))
+            {
+                throw new InvalidDataException("Refusing to replace a symbolic link: " + targetPath);
             }
 
             var temporary = targetPath + ".embybackup-restore";
@@ -723,6 +766,68 @@ namespace EmbyBackup.Core
                 {
                     log("Could not remove the temporary restore folder " + path + ": " + ex.Message);
                 }
+            }
+        }
+
+        private static void ValidateManifestEntry(string path, long bytes, string sha256)
+        {
+            PathSafety.ToArchivePath(path);
+            if (bytes < 0)
+            {
+                throw new InvalidDataException("A manifest entry has a negative size: " + path);
+            }
+            if (string.IsNullOrEmpty(sha256) || sha256.Length != 64)
+            {
+                throw new InvalidDataException("A manifest entry has an invalid SHA-256: " + path);
+            }
+            for (var i = 0; i < sha256.Length; i++)
+            {
+                var value = sha256[i];
+                if (!((value >= '0' && value <= '9') || (value >= 'a' && value <= 'f')
+                    || (value >= 'A' && value <= 'F')))
+                {
+                    throw new InvalidDataException("A manifest entry has an invalid SHA-256: " + path);
+                }
+            }
+        }
+
+        private static long CheckedAdd(long total, long value)
+        {
+            if (value < 0 || total > long.MaxValue - value)
+            {
+                throw new InvalidDataException("The manifest total size is invalid.");
+            }
+            return total + value;
+        }
+
+        private static void EnsureStagingCapacity(string stagingRoot, long bytes)
+        {
+            try
+            {
+                var root = Path.GetPathRoot(Path.GetFullPath(stagingRoot));
+                if (string.IsNullOrEmpty(root))
+                {
+                    return;
+                }
+
+                var drive = new DriveInfo(root);
+                // Leave 128 MiB for the archive reader, filesystem metadata and normal Emby activity.
+                const long reserve = 128L * 1024 * 1024;
+                if (drive.AvailableFreeSpace < reserve || bytes > drive.AvailableFreeSpace - reserve)
+                {
+                    throw new InvalidOperationException(
+                        "There is not enough free space to safely stage this restore. Required: " + bytes
+                        + " bytes plus 128 MiB reserve; available: " + drive.AvailableFreeSpace + " bytes.");
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                throw;
+            }
+            catch
+            {
+                // Some NAS and container mounts do not expose free-space information. Extraction still
+                // remains bounded by the validated manifest size and filesystem write failures.
             }
         }
 

@@ -13,6 +13,9 @@ La versión lista para instalar está en [Releases](https://github.com/ratopro/e
 
 ## Versiones
 
+- **1.4.1**: endurecimiento de seguridad: límites para metadatos ZIP y restauraciones, validación
+  adicional de cabeceras/manifiestos, comprobación de espacio de staging y aislamiento del bypass de
+  certificados FTPS auto-firmados.
 - **1.4.0**: protección opcional de las copias con contraseña (**AES-256** al estilo WinZip) y
   **restauración desde la página**, con verificación previa, doble confirmación y reinicio al terminar.
 - **1.3.0**: programación configurable de las copias automáticas (**cada día**, **cada dos días**,

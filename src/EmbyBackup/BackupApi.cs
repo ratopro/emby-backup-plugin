@@ -483,7 +483,7 @@ namespace EmbyBackup
                 ScheduledBackupsEnabled = plugin != null && plugin.Configuration.ScheduledBackupsEnabled,
                 ProtectBackupsWithPassword = plugin != null && plugin.Configuration.ProtectBackupsWithPassword,
                 PluginVersion = typeof(Plugin).Assembly.GetName().Version == null
-                    ? "1.4.0"
+                    ? "1.4.1"
                     : typeof(Plugin).Assembly.GetName().Version.ToString(),
             };
         }

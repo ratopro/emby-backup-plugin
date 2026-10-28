@@ -111,6 +111,12 @@ namespace EmbyBackup.Core
         private const ushort Max16 = 0xFFFF;
         private const uint Max32 = 0xFFFFFFFF;
 
+        // Archives are supplied by destinations outside the process (especially FTP). Keep parsing
+        // metadata bounded before allocating it. These limits are far above normal Emby configuration
+        // backups, while preventing a crafted EOCD/ZIP64 record from exhausting the server's memory.
+        private const long MaximumCentralDirectoryBytes = 128L * 1024 * 1024;
+        private const long MaximumEntries = 500000;
+
         private readonly string _path;
         private readonly List<ZipEntryInfo> _entries = new List<ZipEntryInfo>();
 
@@ -165,7 +171,7 @@ namespace EmbyBackup.Core
                 throw new ArgumentNullException(nameof(entry));
             }
 
-            var local = ReadLocalHeader(entry);
+                var local = ReadLocalHeader(entry);
             if (entry.Method == ZipEncryption.AesMethod)
             {
                 if (string.IsNullOrEmpty(password))
@@ -178,7 +184,7 @@ namespace EmbyBackup.Core
                     throw new InvalidDataException("Unsupported encrypted ZIP entry: " + entry.Name);
                 }
 
-                var payloadLength = entry.CompressedSize - ZipEncryption.Overhead;
+                    var payloadLength = entry.CompressedSize - ZipEncryption.Overhead;
                 if (payloadLength < 0)
                 {
                     throw new InvalidDataException("The encrypted entry is truncated: " + entry.Name);
@@ -195,8 +201,8 @@ namespace EmbyBackup.Core
                     ReadExact(file, verifier, 0, verifier.Length);
 
                     var mac = new byte[ZipEncryption.MacLength];
-                    var payloadOffset = local.DataOffset + ZipEncryption.SaltLength
-                        + ZipEncryption.PasswordVerifierLength;
+                    var payloadOffset = CheckedAdd(local.DataOffset, ZipEncryption.SaltLength
+                        + ZipEncryption.PasswordVerifierLength, "The encrypted entry offset is invalid.");
                     file.Seek(payloadOffset + payloadLength, SeekOrigin.Begin);
                     ReadExact(file, mac, 0, mac.Length);
                     file.Seek(payloadOffset, SeekOrigin.Begin);
@@ -311,6 +317,11 @@ namespace EmbyBackup.Core
         {
             using (var file = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024))
             {
+                if (entry.LocalHeaderOffset < 0 || entry.LocalHeaderOffset > file.Length - 30)
+                {
+                    throw new InvalidDataException("The local header is outside the archive: " + entry.Name);
+                }
+
                 file.Seek(entry.LocalHeaderOffset, SeekOrigin.Begin);
                 var header = new byte[30];
                 ReadExact(file, header, 0, header.Length);
@@ -321,9 +332,17 @@ namespace EmbyBackup.Core
 
                 var nameLength = ZipEncryption.ReadUInt16(header, 26);
                 var extraLength = ZipEncryption.ReadUInt16(header, 28);
+                var dataOffset = CheckedAdd(entry.LocalHeaderOffset, 30L + nameLength + extraLength,
+                    "The local entry offset is invalid.");
+                if (dataOffset > file.Length || entry.CompressedSize < 0
+                    || entry.CompressedSize > file.Length - dataOffset)
+                {
+                    throw new InvalidDataException("The entry data is outside the archive: " + entry.Name);
+                }
+
                 return new LocalHeader
                 {
-                    DataOffset = entry.LocalHeaderOffset + 30 + nameLength + extraLength,
+                    DataOffset = dataOffset,
                 };
             }
         }
@@ -367,7 +386,13 @@ namespace EmbyBackup.Core
                     ReadZip64End(file, eocdOffset, ref entriesTotal, ref centralSize, ref centralOffset);
                 }
 
-                if (centralOffset < 0 || centralSize < 0 || centralOffset + centralSize > file.Length)
+                if (entriesTotal < 0 || entriesTotal > MaximumEntries)
+                {
+                    throw new InvalidDataException("The ZIP contains too many entries.");
+                }
+
+                if (centralOffset < 0 || centralSize < 0 || centralSize > MaximumCentralDirectoryBytes
+                    || centralOffset > file.Length || centralSize > file.Length - centralOffset)
                 {
                     throw new InvalidDataException("The ZIP central directory is outside the file.");
                 }
@@ -416,8 +441,13 @@ namespace EmbyBackup.Core
                 throw new InvalidDataException("The ZIP64 locator is missing.");
             }
 
-            var zip64Offset = (long)ZipEncryption.ReadUInt64(locator, 8);
-            if (zip64Offset < 0 || zip64Offset + 56 > file.Length)
+            var rawZip64Offset = ZipEncryption.ReadUInt64(locator, 8);
+            if (rawZip64Offset > long.MaxValue)
+            {
+                throw new InvalidDataException("The ZIP64 end record offset is invalid.");
+            }
+            var zip64Offset = (long)rawZip64Offset;
+            if (zip64Offset < 0 || zip64Offset > file.Length - 56)
             {
                 throw new InvalidDataException("The ZIP64 end record is outside the file.");
             }
@@ -430,10 +460,9 @@ namespace EmbyBackup.Core
                 throw new InvalidDataException("The ZIP64 end record is damaged.");
             }
 
-            var total = ZipEncryption.ReadUInt64(record, 32);
-            entriesTotal = (long)total;
-            centralSize = (long)ZipEncryption.ReadUInt64(record, 40);
-            centralOffset = (long)ZipEncryption.ReadUInt64(record, 48);
+            entriesTotal = ReadZip64Int64(record, 32, "The ZIP64 entry count is invalid.");
+            centralSize = ReadZip64Int64(record, 40, "The ZIP64 directory size is invalid.");
+            centralOffset = ReadZip64Int64(record, 48, "The ZIP64 directory offset is invalid.");
         }
 
         private static ZipEntryInfo ParseCentralEntry(byte[] central, int position, out int consumed)
@@ -536,6 +565,25 @@ namespace EmbyBackup.Core
                 offset += read;
                 count -= read;
             }
+        }
+
+        private static long ReadZip64Int64(byte[] buffer, int offset, string error)
+        {
+            var value = ZipEncryption.ReadUInt64(buffer, offset);
+            if (value > long.MaxValue)
+            {
+                throw new InvalidDataException(error);
+            }
+            return (long)value;
+        }
+
+        private static long CheckedAdd(long left, long right, string error)
+        {
+            if (left < 0 || right < 0 || left > long.MaxValue - right)
+            {
+                throw new InvalidDataException(error);
+            }
+            return left + right;
         }
 
         private sealed class LocalHeader

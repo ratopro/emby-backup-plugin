@@ -339,10 +339,6 @@ namespace EmbyBackup.Core
             _port = settings.FtpPort <= 0 ? 21 : settings.FtpPort;
             _remoteDirectory = BackupDestinationSettings.NormalizeFtpPath(settings.FtpPath);
 
-            if (_settings.FtpUseTls && _settings.FtpAcceptAnyCertificate)
-            {
-                FtpTlsPolicy.RelaxCertificateChecks();
-            }
         }
 
         public string Kind
@@ -600,7 +596,7 @@ namespace EmbyBackup.Core
                 try
                 {
                     var request = CreateRequest(current, WebRequestMethods.Ftp.MakeDirectory, true);
-                    using (request.GetResponse())
+                    using (GetResponse(request))
                     {
                     }
                 }
@@ -628,7 +624,7 @@ namespace EmbyBackup.Core
         {
             var request = CreateRequest(_remoteDirectory, WebRequestMethods.Ftp.ListDirectoryDetails, true);
             var entries = new List<RemoteEntry>();
-            using (var response = (FtpWebResponse)request.GetResponse())
+            using (var response = (FtpWebResponse)GetResponse(request))
             using (var reader = new StreamReader(response.GetResponseStream()))
             {
                 string line;
@@ -710,7 +706,7 @@ namespace EmbyBackup.Core
             try
             {
                 var request = CreateRequest(fileName, WebRequestMethods.Ftp.GetDateTimestamp);
-                using (var response = (FtpWebResponse)request.GetResponse())
+                using (var response = (FtpWebResponse)GetResponse(request))
                 {
                     return response.LastModified.ToUniversalTime();
                 }
@@ -727,12 +723,12 @@ namespace EmbyBackup.Core
             var request = CreateRequest(remoteName, WebRequestMethods.Ftp.UploadFile);
             request.ContentLength = length;
             using (var input = new FileStream(localPath, FileMode.Open, FileAccess.Read, FileShare.Read))
-            using (var output = request.GetRequestStream())
+            using (var output = GetRequestStream(request))
             {
                 input.CopyTo(output, 128 * 1024);
             }
 
-            using (request.GetResponse())
+            using (GetResponse(request))
             {
             }
         }
@@ -742,12 +738,12 @@ namespace EmbyBackup.Core
             var bytes = Encoding.UTF8.GetBytes(text);
             var request = CreateRequest(remoteName, WebRequestMethods.Ftp.UploadFile);
             request.ContentLength = bytes.Length;
-            using (var output = request.GetRequestStream())
+            using (var output = GetRequestStream(request))
             {
                 output.Write(bytes, 0, bytes.Length);
             }
 
-            using (request.GetResponse())
+            using (GetResponse(request))
             {
             }
         }
@@ -755,7 +751,7 @@ namespace EmbyBackup.Core
         private void DownloadFile(string remoteName, string localPath)
         {
             var request = CreateRequest(remoteName, WebRequestMethods.Ftp.DownloadFile);
-            using (var response = (FtpWebResponse)request.GetResponse())
+            using (var response = (FtpWebResponse)GetResponse(request))
             using (var input = response.GetResponseStream())
             using (var output = new FileStream(localPath, FileMode.Create, FileAccess.Write, FileShare.None))
             {
@@ -766,7 +762,7 @@ namespace EmbyBackup.Core
         private string DownloadText(string remoteName)
         {
             var request = CreateRequest(remoteName, WebRequestMethods.Ftp.DownloadFile);
-            using (var response = (FtpWebResponse)request.GetResponse())
+            using (var response = (FtpWebResponse)GetResponse(request))
             using (var input = response.GetResponseStream())
             using (var reader = new StreamReader(input, Encoding.UTF8))
             {
@@ -794,7 +790,7 @@ namespace EmbyBackup.Core
         {
             var request = CreateRequest(from, WebRequestMethods.Ftp.Rename);
             request.RenameTo = to;
-            using (request.GetResponse())
+            using (GetResponse(request))
             {
             }
         }
@@ -802,7 +798,7 @@ namespace EmbyBackup.Core
         private void DeleteRemote(string remoteName)
         {
             var request = CreateRequest(remoteName, WebRequestMethods.Ftp.DeleteFile);
-            using (request.GetResponse())
+            using (GetResponse(request))
             {
             }
         }
@@ -834,6 +830,22 @@ namespace EmbyBackup.Core
             request.Timeout = 120000;
             request.ReadWriteTimeout = 600000;
             return request;
+        }
+
+        private WebResponse GetResponse(FtpWebRequest request)
+        {
+            using (FtpTlsPolicy.Enter(_settings.FtpUseTls && _settings.FtpAcceptAnyCertificate))
+            {
+                return request.GetResponse();
+            }
+        }
+
+        private Stream GetRequestStream(FtpWebRequest request)
+        {
+            using (FtpTlsPolicy.Enter(_settings.FtpUseTls && _settings.FtpAcceptAnyCertificate))
+            {
+                return request.GetRequestStream();
+            }
         }
 
         private string RemoteUri(string remoteName)
@@ -902,16 +914,22 @@ namespace EmbyBackup.Core
     /// <summary>
     /// FtpWebRequest has no per-request certificate callback and .NET passes the SslStream, not the
     /// request, to ServicePointManager. The flag is AsyncLocal, so it only relaxes validation for the
-    /// request that created a destination with "accept any certificate" enabled.
+    /// synchronous FTP operation that explicitly opts in. It is never left enabled on the caller's
+    /// execution context, so unrelated TLS connections in Emby retain normal certificate validation.
     /// </summary>
     internal static class FtpTlsPolicy
     {
-        private static readonly AsyncLocal<bool> Relaxed = new AsyncLocal<bool>();
+        private static readonly AsyncLocal<int> RelaxedDepth = new AsyncLocal<int>();
         private static readonly object Gate = new object();
         private static bool _installed;
 
-        public static void RelaxCertificateChecks()
+        public static IDisposable Enter(bool acceptAnyCertificate)
         {
+            if (!acceptAnyCertificate)
+            {
+                return NoopScope.Instance;
+            }
+
             lock (Gate)
             {
                 if (!_installed)
@@ -919,14 +937,32 @@ namespace EmbyBackup.Core
                     var previous = ServicePointManager.ServerCertificateValidationCallback;
                     ServicePointManager.ServerCertificateValidationCallback =
                         (sender, certificate, chain, errors) =>
-                            Relaxed.Value || (previous != null
+                            RelaxedDepth.Value > 0 || (previous != null
                                 ? previous(sender, certificate, chain, errors)
                                 : errors == SslPolicyErrors.None);
                     _installed = true;
                 }
             }
 
-            Relaxed.Value = true;
+            RelaxedDepth.Value = RelaxedDepth.Value + 1;
+            return new RelaxedScope();
+        }
+
+        private sealed class RelaxedScope : IDisposable
+        {
+            public void Dispose()
+            {
+                RelaxedDepth.Value = Math.Max(0, RelaxedDepth.Value - 1);
+            }
+        }
+
+        private sealed class NoopScope : IDisposable
+        {
+            public static readonly NoopScope Instance = new NoopScope();
+
+            public void Dispose()
+            {
+            }
         }
     }
 }
