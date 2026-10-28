@@ -96,6 +96,17 @@ namespace EmbyBackup.Core
         {
             var normalized = NormalizeRelative(relative);
             var name = Path.GetFileName(normalized);
+            if (normalized.IndexOf('/') < 0)
+            {
+                foreach (var excludedRootName in BackupConstants.ExcludedRootFileNames)
+                {
+                    if (string.Equals(name, excludedRootName, PathComparison))
+                    {
+                        return true;
+                    }
+                }
+            }
+
             foreach (var excludedName in BackupConstants.ExcludedFileNames)
             {
                 if (string.Equals(name, excludedName, PathComparison))

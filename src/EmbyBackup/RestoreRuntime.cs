@@ -53,6 +53,11 @@ namespace EmbyBackup
 
         public static RestoreStartResult Start(ILogger logger, string fileName, string password)
         {
+            if (!BackupRuntime.IsPluginEnabled())
+            {
+                return NotStarted("Emby Backup is disabled in the plugin settings.");
+            }
+
             if (string.IsNullOrWhiteSpace(fileName))
             {
                 return NotStarted("Choose a backup archive first.");

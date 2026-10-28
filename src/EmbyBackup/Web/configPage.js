@@ -96,6 +96,7 @@ define(['baseView', 'loading'], function (BaseView, loading) {
 
     function loadSettings(view) {
         return ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+            q(view, 'ebPluginEnabled').checked = config.PluginEnabled !== false;
             q(view, 'ebDestinationType').value = config.DestinationType || 'Local';
             q(view, 'ebDestination').value = config.DestinationPath || '';
             q(view, 'ebNetworkPath').value = config.NetworkPath || '';
@@ -123,6 +124,7 @@ define(['baseView', 'loading'], function (BaseView, loading) {
             updateDestinationFields(view);
             updateScheduleFields(view);
             updateProtectionFields(view);
+            updatePluginEnabledFields(view);
             setDirty(view, false);
         });
     }
@@ -139,6 +141,7 @@ define(['baseView', 'loading'], function (BaseView, loading) {
 
         return ApiClient.getPluginConfiguration(pluginId).then(function (config) {
             config.DestinationType = q(view, 'ebDestinationType').value;
+            config.PluginEnabled = q(view, 'ebPluginEnabled').checked;
             config.DestinationPath = q(view, 'ebDestination').value.trim();
             config.NetworkPath = q(view, 'ebNetworkPath').value.trim();
             config.NetworkUsername = q(view, 'ebNetworkUser').value.trim();
@@ -180,6 +183,10 @@ define(['baseView', 'loading'], function (BaseView, loading) {
         if (!enabled) {
             input.value = '';
         }
+    }
+
+    function updatePluginEnabledFields(view) {
+        q(view, 'ebPluginDisabledNote').hidden = q(view, 'ebPluginEnabled').checked;
     }
 
     function updateDestinationFields(view) {
@@ -234,6 +241,9 @@ define(['baseView', 'loading'], function (BaseView, loading) {
     }
 
     function renderStatus(view, status) {
+        var pluginEnabled = status.PluginEnabled !== false;
+        view.__ebPluginEnabled = pluginEnabled;
+        q(view, 'ebPluginDisabledNote').hidden = pluginEnabled;
         var state = status.State || 'idle';
         var dot = q(view, 'ebStateDot');
         dot.className = 'ebDot ' + stateClass(state);
@@ -262,13 +272,16 @@ define(['baseView', 'loading'], function (BaseView, loading) {
 
         var restore = status.Restore;
         var restoreRunning = !!(restore && restore.Running);
-        q(view, 'ebRun').disabled = !!status.Running || restoreRunning;
+        q(view, 'ebRun').disabled = !pluginEnabled || !!status.Running || restoreRunning;
         q(view, 'ebCancel').disabled = !status.Running;
-        q(view, 'ebRunHint').textContent = restoreRunning
+        q(view, 'ebTest').disabled = !pluginEnabled;
+        q(view, 'ebRunHint').textContent = !pluginEnabled
+            ? 'Emby Backup is disabled. Enable it in Settings and save before starting an operation.'
+            : (restoreRunning
             ? 'A restore is running. Wait for it to finish before starting a backup.'
             : (status.Running
                 ? 'A backup is running. You can keep this page open or close it; the server continues.'
-                : 'The settings are saved automatically before a manual run.');
+                : 'The settings are saved automatically before a manual run.'));
         if (status.PluginVersion) {
             q(view, 'ebPluginVersion').textContent = 'Plugin ' + status.PluginVersion;
             q(view, 'ebFooterVersion').textContent = 'Emby Backup ' + status.PluginVersion;
@@ -949,7 +962,7 @@ define(['baseView', 'loading'], function (BaseView, loading) {
 
         var select = q(view, 'ebRestoreFile');
         var start = q(view, 'ebRestoreStart');
-        start.disabled = running || !select.value || select.disabled;
+        start.disabled = !view.__ebPluginEnabled || running || !select.value || select.disabled;
         q(view, 'ebRestartEmby').hidden = !(status.State === 'success' && status.RestartRequired);
     }
 
@@ -1120,7 +1133,8 @@ define(['baseView', 'loading'], function (BaseView, loading) {
             'ebDestination', 'ebNetworkPath', 'ebNetworkUser', 'ebNetworkPassword', 'ebNetworkDomain',
             'ebFtpHost', 'ebFtpPort', 'ebFtpPath', 'ebFtpUser', 'ebFtpPassword', 'ebFtpTls', 'ebFtpPassive',
             'ebFtpCert', 'ebRetention', 'ebCompression', 'ebBusySeconds', 'ebScheduled', 'ebVerify',
-            'ebSchedulePeriod', 'ebScheduleDay', 'ebScheduleTime', 'ebProtect', 'ebBackupPassword'
+            'ebSchedulePeriod', 'ebScheduleDay', 'ebScheduleTime', 'ebProtect', 'ebBackupPassword',
+            'ebPluginEnabled'
         ].forEach(function (id) {
             var input = q(view, id);
             input.addEventListener('input', function () { setDirty(view, true); });
@@ -1129,6 +1143,10 @@ define(['baseView', 'loading'], function (BaseView, loading) {
 
         q(view, 'ebProtect').addEventListener('change', function () {
             updateProtectionFields(view);
+        });
+
+        q(view, 'ebPluginEnabled').addEventListener('change', function () {
+            updatePluginEnabledFields(view);
         });
 
         ['ebSchedulePeriod', 'ebScheduleDay', 'ebScheduleTime', 'ebScheduled'].forEach(function (id) {

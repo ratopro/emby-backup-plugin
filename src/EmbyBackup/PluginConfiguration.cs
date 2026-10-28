@@ -9,6 +9,12 @@ namespace EmbyBackup
     public class PluginConfiguration : MediaBrowser.Model.Plugins.BasePluginConfiguration
     {
         /// <summary>
+        /// Master switch for the plugin. When off, no new manual, scheduled or restore operation can
+        /// start, and the Emby main-menu shortcut is not published.
+        /// </summary>
+        public bool PluginEnabled { get; set; } = true;
+
+        /// <summary>
         /// Enables the scheduled task. A manual backup can still be started when this is off.
         /// </summary>
         public bool ScheduledBackupsEnabled { get; set; } = true;

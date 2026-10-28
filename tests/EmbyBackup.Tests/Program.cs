@@ -156,6 +156,14 @@ namespace EmbyBackup.Tests
                         "nested archive path traversal is rejected");
                     CheckThrows(() => PathSafety.ToArchivePath("C:/Windows/file"),
                         "archive paths with drive letters are rejected");
+                    Check(PathSafety.IsExcludedDirectory(".local/share/webkitgtk"),
+                        "desktop profile directories are excluded from backups");
+                    Check(PathSafety.IsExcludedDirectory("backup/Emby Server Databases - 2024-06-17 00.10.11"),
+                        "legacy Emby backup snapshots are excluded from backups");
+                    Check(PathSafety.IsExcludedFile(".bashrc"),
+                        "desktop profile files at the data root are excluded from backups");
+                    Check(!PathSafety.IsExcludedFile("config/.bashrc"),
+                        "a similarly named server file below config is not excluded");
                     Check(!BackupCatalog.IsManagedFileName("../emby-backup-x.zip"),
                         "path traversal file names are rejected by the catalog");
                     Check(BackupCatalog.IsManagedFileName("emby-backup-20260101-000000Z.zip"),

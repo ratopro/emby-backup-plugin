@@ -46,7 +46,12 @@ namespace EmbyBackup
                 }
 
                 var configuration = plugin.Configuration;
-                if (configuration == null || !configuration.ScheduledBackupsEnabled)
+                if (configuration == null || !configuration.PluginEnabled)
+                {
+                    return "Emby Backup is disabled in the plugin settings.";
+                }
+
+                if (!configuration.ScheduledBackupsEnabled)
                 {
                     return "Automatic backups are disabled in the plugin settings. Manual backups can still be "
                         + "started from the Emby Backup page.";
@@ -91,7 +96,13 @@ namespace EmbyBackup
         public async Task Execute(CancellationToken cancellationToken, IProgress<double> progress)
         {
             var plugin = Plugin.Instance;
-            if (plugin == null || !plugin.Configuration.ScheduledBackupsEnabled)
+            if (plugin == null || !plugin.Configuration.PluginEnabled)
+            {
+                _logger.Info("Scheduled Emby Backup is disabled because the plugin is inactive; nothing to do.");
+                return;
+            }
+
+            if (!plugin.Configuration.ScheduledBackupsEnabled)
             {
                 _logger.Info("Scheduled Emby Backup is disabled in the plugin settings; nothing to do.");
                 return;

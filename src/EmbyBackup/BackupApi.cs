@@ -86,6 +86,7 @@ namespace EmbyBackup
 
     public class BackupStatusView
     {
+        public bool PluginEnabled { get; set; }
         public bool Running { get; set; }
         public string State { get; set; }
         public double Progress { get; set; }
@@ -293,6 +294,12 @@ namespace EmbyBackup
         public object Post(BackupVerifyRequest request)
         {
             var view = new BackupVerifyView();
+            if (!BackupRuntime.IsPluginEnabled())
+            {
+                view.Error = "Emby Backup is disabled in the plugin settings.";
+                return view;
+            }
+
             var settings = BackupRuntime.GetDestinationSettings();
             if (!settings.IsConfigured)
             {
@@ -350,6 +357,16 @@ namespace EmbyBackup
 
         public object Post(RestoreCheckRequest request)
         {
+            if (!BackupRuntime.IsPluginEnabled())
+            {
+                return new RestoreCheckView
+                {
+                    Success = false,
+                    Error = "Emby Backup is disabled in the plugin settings.",
+                    FileName = request == null ? null : request.FileName,
+                };
+            }
+
             var settings = BackupRuntime.GetDestinationSettings();
             if (!settings.IsConfigured)
             {
@@ -431,6 +448,12 @@ namespace EmbyBackup
         public object Post(BackupTestRequest request)
         {
             var view = new BackupTestView();
+            if (!BackupRuntime.IsPluginEnabled())
+            {
+                view.Message = "Emby Backup is disabled in the plugin settings.";
+                return view;
+            }
+
             var settings = BackupRuntime.GetDestinationSettings();
             view.Location = settings.Location;
 
@@ -469,6 +492,7 @@ namespace EmbyBackup
 
             return new BackupStatusView
             {
+                PluginEnabled = plugin != null && plugin.Configuration.PluginEnabled,
                 Running = status.Running,
                 State = status.State,
                 Progress = status.Progress,
@@ -483,7 +507,7 @@ namespace EmbyBackup
                 ScheduledBackupsEnabled = plugin != null && plugin.Configuration.ScheduledBackupsEnabled,
                 ProtectBackupsWithPassword = plugin != null && plugin.Configuration.ProtectBackupsWithPassword,
                 PluginVersion = typeof(Plugin).Assembly.GetName().Version == null
-                    ? "1.4.1"
+                    ? "1.4.4"
                     : typeof(Plugin).Assembly.GetName().Version.ToString(),
             };
         }

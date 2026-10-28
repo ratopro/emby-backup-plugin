@@ -33,6 +33,56 @@ namespace EmbyBackup.Core
             "data/livetv/recordings",
             "data/subtitles",
             "data/sync",
+
+            // Backups created by Emby's former Backup & Restore plugin may be retained below
+            // ProgramData. They are not live server state and may contain corrupt historical database
+            // snapshots; recursively including them makes a new backup fail unnecessarily.
+            "backup",
+
+            // A correctly configured Emby data folder does not need a desktop user's profile. Some
+            // package installations or migrations leave $HOME contents under ProgramData; excluding
+            // them prevents personal files and their symbolic links from ending up in server backups.
+            ".cache",
+            ".config",
+            ".dbus",
+            ".dotnet",
+            ".gnome",
+            ".gnupg",
+            ".local",
+            ".pki",
+            ".thumbnails",
+            "Desktop",
+            "Documents",
+            "Downloads",
+            "fonts",
+            "Music",
+            "Pictures",
+            "Public",
+            "Templates",
+            "Videos",
+        };
+
+        /// <summary>
+        /// Profile dot-files found at the program-data root are not Emby server state. This list is kept
+        /// separate because it only applies at the root, unlike <see cref="ExcludedFileNames"/>.
+        /// </summary>
+        public static readonly string[] ExcludedRootFileNames =
+        {
+            ".asoundrc",
+            ".bash_history",
+            ".bash_logout",
+            ".bashrc",
+            ".dmrc",
+            ".face",
+            ".gksu.lock",
+            ".gtk-bookmarks",
+            ".gtkrc-2.0",
+            ".ICEauthority",
+            ".lesshst",
+            ".profile",
+            ".sudo_as_admin_successful",
+            ".Xauthority",
+            ".xsession-errors",
         };
 
         /// <summary>

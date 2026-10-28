@@ -13,6 +13,12 @@ La versión lista para instalar está en [Releases](https://github.com/ratopro/e
 
 ## Versiones
 
+- **1.4.4**: excluye `backup/` bajo el Data Folder para no volver a procesar instantáneas históricas
+  corruptas de Emby Backup & Restore.
+- **1.4.3**: excluye perfiles de escritorio ajenos a Emby que se encuentren dentro del Data Folder,
+  incluidos `.local/`, `.config/`, `.cache/` y ficheros como `.bashrc`.
+- **1.4.2**: interruptor maestro para activar o desactivar el plugin y acceso directo **Emby Backup**
+  en el menú lateral de Emby cuando está activo.
 - **1.4.1**: endurecimiento de seguridad: límites para metadatos ZIP y restauraciones, validación
   adicional de cabeceras/manifiestos, comprobación de espacio de staging y aislamiento del bypass de
   certificados FTPS auto-firmados.
@@ -42,6 +48,8 @@ La versión lista para instalar está en [Releases](https://github.com/ratopro/e
 - `metadata/` completo (NFO, imágenes, pósteres, fondos, subtítulos descargados).
 - `cache/`, `logs/`, `transcoding-temp/`.
 - Bibliotecas multimedia, grabaciones de Live TV (`data/livetv/recordings`) y uploads de cámara.
+- Directorios y ficheros de perfil de escritorio encontrados por error dentro del Data Folder (`.local/`,
+  `.config/`, `.cache/`, `Desktop/`, `Downloads/`, `.bashrc`, etc.).
 - Binarios y símbolos: `.dll`, `.exe`, `.pdb`, `.so`, `.dylib`.
 - Enlaces simbólicos y junctions, incluso si apuntan fuera del Data Folder.
 - El propio historial del plugin (`plugins/EmbyBackup/`) y sus ficheros temporales.

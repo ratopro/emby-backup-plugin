@@ -134,6 +134,16 @@
 
                 <form class="ebCard" id="ebSettingsForm">
                     <h2>Settings</h2>
+                    <div class="ebChecks">
+                        <label class="ebCheck"><input id="ebPluginEnabled" type="checkbox" checked>
+                            <span>Enable Emby Backup</span></label>
+                        <span class="ebHint">When disabled, no new manual, automatic or restore operation can
+                            start. The shortcut in Emby's side menu is removed after refreshing Emby; this
+                            settings page remains available under <b>Panel → Plugins</b>.</span>
+                    </div>
+                    <div class="ebWarn" id="ebPluginDisabledNote" hidden>
+                        <div>Emby Backup is disabled. Enable it and save the settings to manage backups.</div>
+                    </div>
                     <div class="ebGrid">
                         <label class="ebField ebWide">Destination type
                             <select id="ebDestinationType">

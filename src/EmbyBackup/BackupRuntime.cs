@@ -64,6 +64,16 @@ namespace EmbyBackup
         {
             EnsureConfigured();
 
+            if (!IsPluginEnabled())
+            {
+                return new BackupStartResult
+                {
+                    Started = false,
+                    Message = "Emby Backup is disabled in the plugin settings.",
+                    Status = GetStatus(),
+                };
+            }
+
             if (!RunLock.Wait(0))
             {
                 return new BackupStartResult
@@ -98,6 +108,11 @@ namespace EmbyBackup
             IProgress<double> progress)
         {
             EnsureConfigured();
+
+            if (!IsPluginEnabled())
+            {
+                return;
+            }
 
             await RunLock.WaitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -186,6 +201,12 @@ namespace EmbyBackup
                 var plugin = Plugin.Instance;
                 return plugin == null ? string.Empty : plugin.Configuration.DestinationPath;
             }
+        }
+
+        public static bool IsPluginEnabled()
+        {
+            var plugin = Plugin.Instance;
+            return plugin != null && plugin.Configuration != null && plugin.Configuration.PluginEnabled;
         }
 
         public static BackupDestinationSettings GetDestinationSettings()

@@ -38,7 +38,7 @@ namespace EmbyBackup
             BackupRuntime.Configure(
                 applicationPaths.ProgramDataPath,
                 Path.Combine(applicationPaths.PluginsPath, "EmbyBackup"),
-                assemblyVersion == null ? "1.4.1" : assemblyVersion.ToString());
+                assemblyVersion == null ? "1.4.4" : assemblyVersion.ToString());
         }
 
         public void Run()
@@ -111,6 +111,10 @@ namespace EmbyBackup
                     Name = "EmbyServerBackup",
                     EmbeddedResourcePath = GetType().Namespace + ".Web.configPage.html",
                     IsMainConfigPage = true,
+                    DisplayName = "Emby Backup",
+                    EnableInMainMenu = Configuration != null && Configuration.PluginEnabled,
+                    MenuSection = "server",
+                    MenuIcon = "backup",
                 },
                 new PluginPageInfo
                 {
