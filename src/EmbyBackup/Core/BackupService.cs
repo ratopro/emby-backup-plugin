@@ -252,6 +252,9 @@ namespace EmbyBackup.Core
                     DurationSeconds = Math.Round(result.Duration.TotalSeconds, 1),
                     Error = result.Error,
                     Warnings = new List<string>(warnings),
+                    Origin = string.Equals(request.Origin, "scheduled", StringComparison.OrdinalIgnoreCase)
+                        ? "scheduled"
+                        : "manual",
                 };
 
                 BackupHistoryStore.Append(request.PluginDataPath, record);

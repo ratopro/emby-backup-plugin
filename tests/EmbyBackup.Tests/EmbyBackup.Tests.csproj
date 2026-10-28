@@ -18,6 +18,7 @@
     <Compile Include="../../src/EmbyBackup/Core/BackupHistoryStore.cs" Link="Core/BackupHistoryStore.cs" />
     <Compile Include="../../src/EmbyBackup/Core/BackupInventory.cs" Link="Core/BackupInventory.cs" />
     <Compile Include="../../src/EmbyBackup/Core/BackupModels.cs" Link="Core/BackupModels.cs" />
+    <Compile Include="../../src/EmbyBackup/Core/BackupScheduleRules.cs" Link="Core/BackupScheduleRules.cs" />
     <Compile Include="../../src/EmbyBackup/Core/BackupService.cs" Link="Core/BackupService.cs" />
     <Compile Include="../../src/EmbyBackup/Core/BackupVerifier.cs" Link="Core/BackupVerifier.cs" />
     <Compile Include="../../src/EmbyBackup/Core/PathSafety.cs" Link="Core/PathSafety.cs" />

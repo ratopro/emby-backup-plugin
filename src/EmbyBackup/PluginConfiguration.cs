@@ -9,9 +9,20 @@ namespace EmbyBackup
     public class PluginConfiguration : MediaBrowser.Model.Plugins.BasePluginConfiguration
     {
         /// <summary>
-        /// Enables the nightly scheduled task. A manual backup can still be started when this is off.
+        /// Enables the scheduled task. A manual backup can still be started when this is off.
         /// </summary>
         public bool ScheduledBackupsEnabled { get; set; } = true;
+
+        /// <summary>
+        /// Daily, AlternateDays, Weekly or Monthly. Matches BackupSchedulePeriods in Core.
+        /// </summary>
+        public string SchedulePeriod { get; set; } = "Daily";
+
+        /// <summary>Local time of day for the automatic backup, as HH:mm.</summary>
+        public string ScheduleTime { get; set; } = "03:00";
+
+        /// <summary>Only used when SchedulePeriod is Weekly.</summary>
+        public string ScheduleDayOfWeek { get; set; } = "Monday";
 
         /// <summary>
         /// Local, Network or Ftp. Matches BackupDestinationKinds in Core.
@@ -75,6 +86,10 @@ namespace EmbyBackup
 
         public void Normalize()
         {
+            SchedulePeriod = EmbyBackup.Core.BackupSchedulePeriods.Normalize(SchedulePeriod);
+            ScheduleTime = EmbyBackup.Core.BackupScheduleRules.NormalizeTime(ScheduleTime);
+            ScheduleDayOfWeek = EmbyBackup.Core.BackupScheduleRules.NormalizeDayOfWeek(ScheduleDayOfWeek);
+
             DestinationType = EmbyBackup.Core.BackupDestinationKinds.Normalize(DestinationType);
             DestinationPath = (DestinationPath ?? string.Empty).Trim();
             NetworkPath = (NetworkPath ?? string.Empty).Trim();

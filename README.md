@@ -13,6 +13,8 @@ La versión lista para instalar está en [Releases](https://github.com/ratopro/e
 
 ## Versiones
 
+- **1.3.0**: programación configurable de las copias automáticas (**cada día**, **cada dos días**,
+  **semanal** o **mensual**) y hora de inicio, con el origen (*Manual* / *Automatic*) en el historial.
 - **1.2.0**: destino seleccionable **Local**, **red SMB** o **FTP/FTPS**, con *Test destination* y
   credenciales guardadas en la configuración.
 - **1.1.1**: comprueba la escritura del destino antes de empezar y explica cómo dar permisos a la cuenta
@@ -56,7 +58,8 @@ Las exclusiones quedan documentadas dentro del propio ZIP, en `manifest.json`.
    Emby 4.9 no descubre el plugin si el DLL está en una subcarpeta.
 
 2. Reinicia Emby. El plugin aparece como **Emby Backup** en *Panel → Plugins*.
-3. En *Panel → Programadas* se registra la tarea diaria **Emby Backup**.
+3. En *Panel → Programadas* se registra la tarea **Emby Backup**, cuya programación sigue los ajustes
+   del plugin.
 
 No hace falta copiar dependencias: el plugin usa las que Emby ya carga (`MediaBrowser.*`, SQLite del
 sistema). En Linux necesita `libsqlite3.so` (Emby ya la usa); en Windows usa el `sqlite3.dll` que Emby
@@ -75,7 +78,10 @@ incluye en `system/`.
 | **Backups to keep** | Número de ZIP que se conservan (por defecto 7). |
 | **Compression** | `Fastest`, `Optimal` o `NoCompression`. |
 | **Database busy timeout** | Segundos de espera si Emby mantiene bloqueada una base. |
-| **Run a backup automatically every day at 03:00** | Activa o desactiva la tarea programada. |
+| **Automatic backups** | Periodicidad: **Every day**, **Every other day**, **Once a week** o **Once a month**. |
+| **Day of the week** | Solo para **Once a week**: día en que se ejecuta la copia. |
+| **Start time** | Hora local del servidor (`HH:mm`) a la que empieza la copia automática. |
+| **Run automatic backups** | Activa o desactiva la tarea programada; las copias manuales siguen disponibles. |
 | **Verify the archive after creating it** | Relee el ZIP y compara todos los SHA-256. |
 | **Test destination** | Guarda los ajustes y comprueba que el destino existe y admite escritura, sin lanzar una copia. |
 
@@ -89,6 +95,33 @@ Ejemplos de destino:
 
 El destino no puede estar dentro del Data Folder; el plugin lo rechaza con un mensaje claro. Cada
 ejecución manual guarda antes los ajustes.
+
+### Programación de las copias
+
+En *Panel → Plugins → Emby Backup* elige la periodicidad, el día de la semana cuando corresponda y la
+hora de inicio. La hora y el día usan la **zona horaria local del servidor**, igual que el resto de
+tareas de Emby.
+
+| Periodicidad | Comportamiento |
+|---|---|
+| **Every day** | Una copia automática al día a la hora elegida. |
+| **Every other day** | Una copia cada dos días, contados desde la última copia **automática** correcta. |
+| **Once a week** | Una copia el día de la semana y a la hora elegidos. |
+| **Once a month** | Una copia el **primer día de cada mes** a la hora elegida. |
+
+- Emby solo sabe expresar «cada día» y «cada semana», así que el plugin usa un trigger diario y decide
+  en cada ejecución si el periodo ya toca. La decisión se basa en la última copia automática correcta
+  del historial: una copia manual no retrasa la siguiente automática.
+- Los días en que no toca, la tarea termina de inmediato sin crear nada; aparece como completada en
+  *Programadas*.
+- Si el servidor está apagado a la hora programada:
+  - **Every day**: esa copia se pierde; la siguiente es al día siguiente a la misma hora.
+  - **Every other day** y **Once a month**: la copia se hace en la siguiente ejecución diaria, es
+    decir, al día siguiente a la misma hora.
+  - **Once a week**: se pierde la de esa semana, porque Emby no recupera triggers semanales perdidos.
+- El trigger se aplica al guardar los ajustes y al arrancar Emby, sin reiniciar el servidor. Si nunca
+  has guardado los ajustes, se usa la programación diaria a las 03:00.
+- El historial indica **Automatic** o **Manual** en la columna *Started by*.
 
 ### Destino de red (SMB)
 
@@ -194,6 +227,9 @@ Todas las rutas requieren un token de administrador:
 | `POST` | `/EmbyBackup/TestDestination` |
 | `POST` | `/EmbyBackup/Verify` (`{"FileName":"..."}`) |
 
+Cada entrada de `/EmbyBackup/History` incluye `Origin` (`manual` o `scheduled`), que es lo que muestra
+la columna *Started by*.
+
 ## Qué se crea en el destino
 
 ```
@@ -278,22 +314,25 @@ dotnet run -c Release --project tests/EmbyBackup.Tests
 
 El resultado es `src/EmbyBackup/bin/Release/netstandard2.0/EmbyBackup.dll`.
 
-Las 71 pruebas del motor cubren: WAL real con la backup API, snapshots, ZIP, manifiesto, sidecar,
+Las 95 pruebas del motor cubren: WAL real con la backup API, snapshots, ZIP, manifiesto, sidecar,
 verificación, retención segura local y remota, archivos ajenos, cancelación, path traversal, destino
 dentro del Data Folder, archivos corruptos, exclusión de binarios y de metadatos, validación de los
-tres tipos de destino y análisis de listados FTP (Unix e IIS).
+tres tipos de destino, análisis de listados FTP (Unix e IIS) y las reglas de programación (periodos,
+horas, días de la semana y decisión de vencimiento).
 
 ## Estructura
 
 ```
 src/EmbyBackup/
-  Plugin.cs                 Plugin, páginas y miniatura
-  BackupTask.cs             Tarea programada diaria
+  Plugin.cs                 Plugin, páginas, miniatura y aplicación del trigger
+  BackupTask.cs             Tarea programada (periodo, guarda y descripción)
+  BackupSchedule.cs         Construcción y aplicación del trigger de Emby
   BackupApi.cs              Rutas REST administrativas
   BackupRuntime.cs          Estado compartido y ejecución en segundo plano
   PluginConfiguration.cs    Ajustes persistidos en plugins/configurations/EmbyBackup.xml
   Core/                     Motor independiente de Emby (probado aparte)
-  Core/BackupDestinations.cs  Destinos Local, red y FTP/FTPS
+  Core/BackupDestinations.cs    Destinos Local, red y FTP/FTPS
+  Core/BackupScheduleRules.cs   Reglas puras de periodo, hora y día
   Web/                      Página de configuración (HTML + JS)
   Images/thumb.png          Miniatura
 tests/EmbyBackup.Tests/     Pruebas del motor
@@ -304,6 +343,9 @@ GUID del plugin: `5a3c44fa-8c66-4f07-b75e-4a8c6123852f`.
 ## Limitaciones conocidas
 
 - Solo se ejecuta una copia a la vez (manual o programada).
+- Emby no recupera una tarea diaria o semanal perdida mientras el servidor estaba apagado. Las
+  periodicidades «cada dos días» y «mensual» sí se recuperan al día siguiente porque se comprueban en
+  cada ejecución diaria; la semanal no.
 - Si una base no puede leerse tras el tiempo de espera, la copia falla con un mensaje claro en lugar de
   guardar un estado inconsistente.
 - Los enlaces simbólicos se omiten y quedan reflejados como advertencia en el manifiesto.

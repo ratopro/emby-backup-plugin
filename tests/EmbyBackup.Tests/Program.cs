@@ -280,11 +280,69 @@ namespace EmbyBackup.Tests
                 }
             }
 
+            ScheduleRuleChecks();
+
             Console.WriteLine();
             Console.WriteLine(_failures == 0
                 ? "All " + _checks + " checks passed."
                 : _failures + " of " + _checks + " checks FAILED.");
             Environment.Exit(_failures == 0 ? 0 : 1);
+        }
+
+        private static void ScheduleRuleChecks()
+        {
+            Check(BackupSchedulePeriods.Normalize(null) == BackupSchedulePeriods.Daily,
+                "an empty schedule period means daily");
+            Check(BackupSchedulePeriods.Normalize("weekly") == BackupSchedulePeriods.Weekly,
+                "a schedule period is case-insensitive");
+            Check(BackupSchedulePeriods.Normalize("something") == BackupSchedulePeriods.Daily,
+                "an unknown schedule period falls back to daily");
+
+            Check(BackupScheduleRules.NormalizeTime("3:15") == "03:15", "a short time is padded to HH:mm");
+            Check(BackupScheduleRules.NormalizeTime("23:59") == "23:59", "a valid time is kept");
+            Check(BackupScheduleRules.NormalizeTime("25:00") == "03:00", "an invalid time falls back to 03:00");
+            Check(BackupScheduleRules.NormalizeTime(null) == "03:00", "a missing time falls back to 03:00");
+
+            Check(BackupScheduleRules.NormalizeDayOfWeek("friday") == "Friday",
+                "a weekday is normalized case-insensitively");
+            Check(BackupScheduleRules.NormalizeDayOfWeek("nope") == "Monday",
+                "an unknown weekday falls back to Monday");
+
+            var today = new DateTime(2026, 10, 28, 3, 0, 0, DateTimeKind.Local);
+
+            Check(BackupScheduleRules.IsDue("Daily", today, null), "daily is due when there is no history");
+            Check(BackupScheduleRules.IsDue("Daily", today, today.AddDays(-1)), "daily is due the next day");
+            Check(!BackupScheduleRules.IsDue("Daily", today, today.AddHours(-1)),
+                "daily is not due twice on the same day");
+
+            Check(BackupScheduleRules.IsDue("AlternateDays", today, today.AddDays(-2)),
+                "alternate days is due after two days");
+            Check(!BackupScheduleRules.IsDue("AlternateDays", today, today.AddDays(-1)),
+                "alternate days is not due after one day");
+            Check(BackupScheduleRules.IsDue("AlternateDays", today, today.AddDays(-5)),
+                "alternate days catches up after a missed run");
+
+            Check(!BackupScheduleRules.IsDue("Monthly", today, new DateTime(2026, 10, 1, 3, 0, 0, DateTimeKind.Local)),
+                "monthly is not due twice in the same month");
+            Check(BackupScheduleRules.IsDue("Monthly", today, new DateTime(2026, 9, 1, 3, 0, 0, DateTimeKind.Local)),
+                "monthly is due in a new month");
+            Check(BackupScheduleRules.IsDue("Monthly", today, new DateTime(2025, 10, 1, 3, 0, 0, DateTimeKind.Local)),
+                "monthly is due in a new year");
+
+            Check(BackupScheduleRules.IsDue("Weekly", today, today.AddDays(-7)),
+                "weekly is due a week later");
+            Check(!BackupScheduleRules.IsDue("Weekly", today, today.AddHours(-1)),
+                "weekly is not due twice on the same day");
+
+            Check(BackupScheduleRules.Describe("Daily", "04:30", "Monday") == "every day at 04:30",
+                "the daily description includes the time");
+            Check(BackupScheduleRules.Describe("AlternateDays", "04:30", "Monday") == "every other day at 04:30",
+                "the alternate-day description is explicit");
+            Check(BackupScheduleRules.Describe("Weekly", "04:30", "Friday") == "every Friday at 04:30",
+                "the weekly description includes the weekday");
+            Check(BackupScheduleRules.Describe("Monthly", "04:30", "Friday")
+                    == "on the first day of each month at 04:30",
+                "the monthly description explains the first day of the month");
         }
 
         private static BackupRunResult RunBackup(

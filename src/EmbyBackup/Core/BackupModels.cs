@@ -199,6 +199,10 @@ namespace EmbyBackup.Core
 
         [DataMember(Name = "warnings", Order = 12)]
         public List<string> Warnings { get; set; } = new List<string>();
+
+        /// <summary>"manual" or "scheduled". Older history entries have no value and are treated as manual.</summary>
+        [DataMember(Name = "origin", Order = 13)]
+        public string Origin { get; set; }
     }
 
     public sealed class BackupRequest
@@ -208,6 +212,7 @@ namespace EmbyBackup.Core
         public BackupDestinationSettings Destination { get; set; }
         public string EmbyVersion { get; set; }
         public string PluginVersion { get; set; }
+        public string Origin { get; set; } = "manual";
         public string Compression { get; set; }
         public int RetentionCount { get; set; }
         public int BusyTimeoutSeconds { get; set; }

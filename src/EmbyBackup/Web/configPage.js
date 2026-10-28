@@ -113,9 +113,13 @@ define(['baseView', 'loading'], function (BaseView, loading) {
             q(view, 'ebRetention').value = config.RetentionCount || 7;
             q(view, 'ebCompression').value = config.Compression || 'Optimal';
             q(view, 'ebBusySeconds').value = config.BusyTimeoutSeconds || 60;
+            q(view, 'ebSchedulePeriod').value = config.SchedulePeriod || 'Daily';
+            q(view, 'ebScheduleDay').value = config.ScheduleDayOfWeek || 'Monday';
+            q(view, 'ebScheduleTime').value = config.ScheduleTime || '03:00';
             q(view, 'ebScheduled').checked = config.ScheduledBackupsEnabled !== false;
             q(view, 'ebVerify').checked = config.VerifyAfterCreate !== false;
             updateDestinationFields(view);
+            updateScheduleFields(view);
             setDirty(view, false);
         });
     }
@@ -139,6 +143,9 @@ define(['baseView', 'loading'], function (BaseView, loading) {
             config.RetentionCount = Math.max(1, Math.min(365, parseInt(q(view, 'ebRetention').value, 10) || 7));
             config.Compression = q(view, 'ebCompression').value;
             config.BusyTimeoutSeconds = Math.max(5, Math.min(600, parseInt(q(view, 'ebBusySeconds').value, 10) || 60));
+            config.SchedulePeriod = q(view, 'ebSchedulePeriod').value;
+            config.ScheduleDayOfWeek = q(view, 'ebScheduleDay').value;
+            config.ScheduleTime = q(view, 'ebScheduleTime').value || '03:00';
             config.ScheduledBackupsEnabled = q(view, 'ebScheduled').checked;
             config.VerifyAfterCreate = q(view, 'ebVerify').checked;
 
@@ -168,6 +175,36 @@ define(['baseView', 'loading'], function (BaseView, loading) {
                 : 'Mount the SMB share in the operating system (for example with cifs in /etc/fstab) and enter '
                     + 'the mount point here. Emby cannot mount shares by itself.';
         });
+    }
+
+    // Mirrors BackupScheduleRules.Describe on the server; the hint explains what Emby can and cannot do when
+    // the server is off at the scheduled time.
+    function updateScheduleFields(view) {
+        var period = q(view, 'ebSchedulePeriod').value || 'Daily';
+        var day = q(view, 'ebScheduleDay').value || 'Monday';
+        var time = q(view, 'ebScheduleTime').value || '03:00';
+        var enabled = q(view, 'ebScheduled').checked;
+        var hint;
+
+        q(view, 'ebScheduleDayField').hidden = period !== 'Weekly';
+
+        if (period === 'Weekly') {
+            hint = 'Automatic backups run every ' + day + ' at ' + time + ' (server local time). '
+                + 'If Emby is not running at that moment, that week is skipped.';
+        } else if (period === 'Monthly') {
+            hint = 'Automatic backups run on the first day of each month at ' + time + ' (server local time). '
+                + 'If Emby is off that day, the backup runs on the next day at the scheduled time.';
+        } else if (period === 'AlternateDays') {
+            hint = 'Automatic backups run every other day at ' + time + ' (server local time), counted from '
+                + 'the last successful automatic backup.';
+        } else {
+            hint = 'Automatic backups run every day at ' + time + ' (server local time). '
+                + 'If Emby is off at that time, that day is skipped.';
+        }
+
+        q(view, 'ebScheduleHint').textContent = enabled
+            ? hint
+            : 'Automatic backups are turned off. Manual backups can still be started from this page.';
     }
 
     function renderStatus(view, status) {
@@ -238,6 +275,8 @@ define(['baseView', 'loading'], function (BaseView, loading) {
                 statusCell.appendChild(el('div', 'ebError ebSmall', record.Error));
             }
             row.appendChild(statusCell);
+
+            row.appendChild(el('td', null, record.Origin === 'scheduled' ? 'Automatic' : 'Manual'));
 
             var actions = el('td');
             if (record.FileName) {
@@ -658,11 +697,16 @@ define(['baseView', 'loading'], function (BaseView, loading) {
         [
             'ebDestination', 'ebNetworkPath', 'ebNetworkUser', 'ebNetworkPassword', 'ebNetworkDomain',
             'ebFtpHost', 'ebFtpPort', 'ebFtpPath', 'ebFtpUser', 'ebFtpPassword', 'ebFtpTls', 'ebFtpPassive',
-            'ebFtpCert', 'ebRetention', 'ebCompression', 'ebBusySeconds', 'ebScheduled', 'ebVerify'
+            'ebFtpCert', 'ebRetention', 'ebCompression', 'ebBusySeconds', 'ebScheduled', 'ebVerify',
+            'ebSchedulePeriod', 'ebScheduleDay', 'ebScheduleTime'
         ].forEach(function (id) {
             var input = q(view, id);
             input.addEventListener('input', function () { setDirty(view, true); });
             input.addEventListener('change', function () { setDirty(view, true); });
+        });
+
+        ['ebSchedulePeriod', 'ebScheduleDay', 'ebScheduleTime', 'ebScheduled'].forEach(function (id) {
+            q(view, id).addEventListener('change', function () { updateScheduleFields(view); });
         });
 
         q(view, 'ebDestinationType').addEventListener('change', function () {

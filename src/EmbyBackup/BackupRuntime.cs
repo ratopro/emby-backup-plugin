@@ -81,7 +81,7 @@ namespace EmbyBackup
                 _status = Running("Manual backup started", null);
             }
 
-            Task.Run(() => Execute(logger, embyVersion, cancellation, null));
+            Task.Run(() => Execute(logger, embyVersion, cancellation, null, "manual"));
 
             return new BackupStartResult
             {
@@ -110,7 +110,7 @@ namespace EmbyBackup
 
             try
             {
-                Execute(logger, embyVersion, cancellation, progress);
+                Execute(logger, embyVersion, cancellation, progress, "scheduled");
             }
             finally
             {
@@ -205,7 +205,8 @@ namespace EmbyBackup
             ILogger logger,
             string embyVersion,
             CancellationTokenSource cancellation,
-            IProgress<double> progress)
+            IProgress<double> progress,
+            string origin)
         {
             try
             {
@@ -225,6 +226,7 @@ namespace EmbyBackup
                     Destination = GetDestinationSettings(),
                     EmbyVersion = embyVersion ?? "unknown",
                     PluginVersion = _pluginVersion,
+                    Origin = origin,
                     Compression = configuration.Compression,
                     RetentionCount = configuration.RetentionCount,
                     BusyTimeoutSeconds = configuration.BusyTimeoutSeconds,

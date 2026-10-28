@@ -234,9 +234,36 @@
                         </label>
                     </div>
 
+                    <div class="ebGrid">
+                        <label class="ebField">Automatic backups
+                            <select id="ebSchedulePeriod">
+                                <option value="Daily">Every day</option>
+                                <option value="AlternateDays">Every other day</option>
+                                <option value="Weekly">Once a week</option>
+                                <option value="Monthly">Once a month</option>
+                            </select>
+                        </label>
+                        <label class="ebField" id="ebScheduleDayField">Day of the week
+                            <select id="ebScheduleDay">
+                                <option value="Monday">Monday</option>
+                                <option value="Tuesday">Tuesday</option>
+                                <option value="Wednesday">Wednesday</option>
+                                <option value="Thursday">Thursday</option>
+                                <option value="Friday">Friday</option>
+                                <option value="Saturday">Saturday</option>
+                                <option value="Sunday">Sunday</option>
+                            </select>
+                        </label>
+                        <label class="ebField">Start time
+                            <input id="ebScheduleTime" type="time" value="03:00" step="60">
+                        </label>
+                    </div>
+                    <span class="ebMuted ebSmall" id="ebScheduleHint">Automatic backups run every day at 03:00
+                        (server local time).</span>
+
                     <div class="ebChecks">
                         <label class="ebCheck"><input id="ebScheduled" type="checkbox" checked>
-                            <span>Run a backup automatically every day at 03:00</span></label>
+                            <span>Run automatic backups. When this is off, only manual backups are created.</span></label>
                         <label class="ebCheck"><input id="ebVerify" type="checkbox" checked>
                             <span>Verify the archive after creating it (reads it back and compares every SHA-256)</span></label>
                     </div>
@@ -288,6 +315,7 @@
                                     <th>Size</th>
                                     <th>Contents</th>
                                     <th>Status</th>
+                                    <th>Started by</th>
                                     <th></th>
                                 </tr>
                             </thead>

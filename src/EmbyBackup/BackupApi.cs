@@ -89,6 +89,7 @@ namespace EmbyBackup
         public string FileName { get; set; }
         public string Destination { get; set; }
         public string Status { get; set; }
+        public string Origin { get; set; }
         public bool Verified { get; set; }
         public long Bytes { get; set; }
         public int FileCount { get; set; }
@@ -321,7 +322,7 @@ namespace EmbyBackup
                 DestinationType = destination.NormalizedType,
                 ScheduledBackupsEnabled = plugin != null && plugin.Configuration.ScheduledBackupsEnabled,
                 PluginVersion = typeof(Plugin).Assembly.GetName().Version == null
-                    ? "1.2.0"
+                    ? "1.3.0"
                     : typeof(Plugin).Assembly.GetName().Version.ToString(),
             };
         }
@@ -414,6 +415,9 @@ namespace EmbyBackup
                 FileName = record.FileName,
                 Destination = record.Destination,
                 Status = record.Status,
+                Origin = string.Equals(record.Origin, "scheduled", StringComparison.OrdinalIgnoreCase)
+                    ? "scheduled"
+                    : "manual",
                 Verified = record.Verified,
                 Bytes = record.Bytes,
                 FileCount = record.FileCount,
